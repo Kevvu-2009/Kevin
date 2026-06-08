@@ -58,6 +58,10 @@ def fetch_ohlcv(
         since_ms = ex.milliseconds() - 730 * 86_400_000  # ~2 years
     elif isinstance(since, str):
         since_ms = ex.parse8601(since)
+        if since_ms is None:
+            # ex.parse8601 returns None for date-only / non-strict-ISO strings
+            # (e.g. "2024-01-01"); fall back to pandas which is far more lenient.
+            since_ms = int(pd.Timestamp(since, tz="UTC").timestamp() * 1000)
     else:
         since_ms = int(since.replace(tzinfo=timezone.utc).timestamp() * 1000)
     until_ms = (

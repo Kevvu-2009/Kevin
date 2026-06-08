@@ -32,7 +32,13 @@ def _load_frame(path: str):
 
     p = Path(path)
     if p.suffix in (".parquet", ".pq"):
-        df = pd.read_parquet(p)
+        try:
+            df = pd.read_parquet(p)
+        except ImportError as exc:
+            raise SystemExit(
+                f"Reading {p} needs a parquet engine (pip install pyarrow). "
+                "Alternatively re-download with a .csv output, which needs no extra deps."
+            ) from exc
     else:
         df = pd.read_csv(p)
     # Normalise timestamp index.
@@ -69,8 +75,19 @@ def cmd_download(args) -> int:
         save_quality_run(rep, args.exchange or s.data_exchange, args.symbol)
         print(f"Stored {n} rows")
     elif args.out:
-        df.to_parquet(args.out)
-        print(f"Wrote {args.out}")
+        out = args.out
+        if Path(out).suffix in (".parquet", ".pq"):
+            try:
+                df.to_parquet(out)
+            except ImportError:
+                # No parquet engine (pyarrow/fastparquet) installed; CSV needs
+                # no extra deps and round-trips fine through _load_frame.
+                out = str(Path(out).with_suffix(".csv"))
+                df.to_csv(out)
+                print("(parquet engine not installed; wrote CSV instead)")
+        else:
+            df.to_csv(out)
+        print(f"Wrote {out}")
     return 0
 
 
