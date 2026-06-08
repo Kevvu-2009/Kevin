@@ -62,7 +62,9 @@ class BullpenVenue(TradingVenue):
     ) -> None:
         self.api_key = api_key or os.getenv("BULLPEN_API_KEY", "")
         self.api_secret = api_secret or os.getenv("BULLPEN_API_SECRET", "")
-        self.base_url = (base_url or os.getenv("BULLPEN_BASE_URL", "https://api.bullpen.xyz")).rstrip("/")
+        # NOTE: bullpen.fi is the target venue; the exact API host/path is
+        # unconfirmed — override via BULLPEN_BASE_URL once verified.
+        self.base_url = (base_url or os.getenv("BULLPEN_BASE_URL", "https://api.bullpen.fi")).rstrip("/")
         self.timeout = timeout
         self._client = None
 
