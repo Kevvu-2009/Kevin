@@ -51,6 +51,16 @@ def _load_frame(path: str):
     return df.sort_index()
 
 
+def _params_from_file(pf: str | None) -> dict:
+    """Read a JSON param dict, or an optimize --out result (use its best_params)."""
+    if not pf:
+        return {}
+    data = json.loads(Path(pf).read_text())
+    if isinstance(data, dict) and "best_params" in data:
+        return data["best_params"] or {}
+    return data or {}
+
+
 def _resolve_params(args) -> dict:
     """Strategy params from --params (inline JSON) or --params-file (a path).
 
@@ -60,13 +70,7 @@ def _resolve_params(args) -> dict:
     """
     if getattr(args, "params", None):
         return json.loads(args.params)
-    pf = getattr(args, "params_file", None)
-    if pf:
-        data = json.loads(Path(pf).read_text())
-        if isinstance(data, dict) and "best_params" in data:
-            return data["best_params"] or {}
-        return data or {}
-    return {}
+    return _params_from_file(getattr(args, "params_file", None))
 
 
 # --------------------------------------------------------------------- commands
@@ -166,6 +170,81 @@ def cmd_validate(args) -> int:
     return 0 if gates.passed else 2
 
 
+def cmd_validate_portfolio(args) -> int:
+    """Validate one strategy across several symbols as an equal-weight portfolio.
+
+    Each ``--data`` file is paired (by position) with a ``--params-file``.  Each
+    symbol is split 70/30 IS/OOS and backtested independently; we then build an
+    equal-weight (1/N) portfolio return stream, pool the trades, and run the
+    *same* acceptance gates + Monte Carlo on the combined result.  Diversifying
+    across symbols lifts the trade count and usually the Sharpe (the streams are
+    not perfectly correlated), which is the principled way to evaluate a
+    strategy that trades too rarely on any single instrument.
+    """
+    import numpy as np
+    import pandas as pd
+
+    from quantbot.backtest.engine import BacktestEngine
+    from quantbot.backtest.metrics import compute_metrics
+    from quantbot.strategies.registry import get_strategy
+    from quantbot.validation import evaluate_gates, is_oos_split, monte_carlo_equity
+
+    s = get_settings()
+    datas = args.data
+    pfiles = list(args.params_file or [])
+    pfiles += [None] * (len(datas) - len(pfiles))  # pad → defaults
+
+    eng = BacktestEngine(costs=s.costs, risk_per_trade=s.risk.risk_per_trade)
+    is_rets, oos_rets = [], []
+    is_pnl: list[float] = []
+    oos_pnl: list[float] = []
+    oos_trade_rets: list[float] = []
+    per_symbol = []
+
+    for j, (data_path, pfile) in enumerate(zip(datas, pfiles)):
+        df = _load_frame(data_path)
+        params = _params_from_file(pfile)
+        is_df, oos_df = is_oos_split(df, 0.70)
+        is_res = eng.run(get_strategy(args.strategy, **params), is_df, args.timeframe)
+        oos_res = eng.run(get_strategy(args.strategy, **params), oos_df, args.timeframe)
+        is_rets.append(is_res.returns.rename(j))
+        oos_rets.append(oos_res.returns.rename(j))
+        if len(is_res.trades):
+            is_pnl += is_res.trades["pnl"].tolist()
+        if len(oos_res.trades):
+            oos_pnl += oos_res.trades["pnl"].tolist()
+            oos_trade_rets += oos_res.trades["return"].tolist()
+        per_symbol.append({
+            "data": data_path,
+            "oos_sharpe": round(oos_res.metrics.sharpe, 3),
+            "oos_profit_factor": round(oos_res.metrics.profit_factor, 3),
+            "oos_return": round(oos_res.metrics.total_return, 4),
+            "oos_trades": oos_res.metrics.n_trades,
+        })
+
+    def _portfolio_equity(rets: list[pd.Series]) -> pd.Series:
+        # Equal-weight (1/N) average of per-symbol bar returns on the union index;
+        # a bar where a symbol has no data counts as flat (0) for that sleeve.
+        aligned = pd.concat(rets, axis=1).sort_index().fillna(0.0)
+        port_ret = aligned.mean(axis=1)
+        return (1.0 + port_ret).cumprod() * eng.initial_cash
+
+    is_metrics = compute_metrics(_portfolio_equity(is_rets), args.timeframe, np.array(is_pnl))
+    oos_metrics = compute_metrics(_portfolio_equity(oos_rets), args.timeframe, np.array(oos_pnl))
+    gates = evaluate_gates(is_metrics, oos_metrics)
+    mc = monte_carlo_equity(np.array(oos_trade_rets) if oos_trade_rets else [])
+    out = {
+        "n_symbols": len(datas),
+        "per_symbol": per_symbol,
+        "portfolio_is_metrics": is_metrics.to_dict(),
+        "portfolio_oos_metrics": oos_metrics.to_dict(),
+        "gates": gates.to_dict(),
+        "monte_carlo": mc.to_dict(),
+    }
+    print(json.dumps(out, indent=2, default=str))
+    return 0 if gates.passed else 2
+
+
 def cmd_run(args) -> int:
     from quantbot.execution.engine import LiveEngine
     from quantbot.execution.paper_broker import PaperBroker
@@ -238,6 +317,16 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--params-file", default=None,
                    help="Path to a JSON param dict or an optimize --out result")
     d.set_defaults(func=cmd_validate)
+
+    d = sub.add_parser("validate-portfolio",
+                       help="Validate a strategy across several symbols (equal-weight)")
+    d.add_argument("--strategy", required=True)
+    d.add_argument("--data", action="append", required=True,
+                   help="Repeat per symbol; paired by position with --params-file")
+    d.add_argument("--params-file", action="append", default=None,
+                   help="Repeat per symbol (optimize --out result or param dict)")
+    d.add_argument("--timeframe", default="1h")
+    d.set_defaults(func=cmd_validate_portfolio)
 
     d = sub.add_parser("run")
     d.add_argument("--strategy", required=True)
