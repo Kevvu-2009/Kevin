@@ -43,6 +43,8 @@ class PolymarketVenue(TradingVenue):
         gamma_url: str | None = None,
         chain_id: int | None = None,
         api_creds: dict | None = None,
+        signature_type: int | None = None,
+        funder: str | None = None,
         timeout: float = 10.0,
     ) -> None:
         self.private_key = private_key or os.getenv("POLYMARKET_PRIVATE_KEY", "")
@@ -54,6 +56,16 @@ class PolymarketVenue(TradingVenue):
             "secret": os.getenv("POLYMARKET_API_SECRET", ""),
             "passphrase": os.getenv("POLYMARKET_API_PASSPHRASE", ""),
         }
+        # signature_type: 0=EOA, 1=Magic/email proxy, 2=browser/Gnosis-Safe.
+        # funder = address that HOLDS the USDC (your Polymarket proxy/Safe), which
+        # differs from the signing key for proxy wallets. Mismatches here are the
+        # #1 cause of "invalid signature" / orders attributed to the wrong wallet.
+        self.signature_type = (
+            int(signature_type)
+            if signature_type is not None
+            else int(os.getenv("POLYMARKET_SIGNATURE_TYPE", "0"))
+        )
+        self.funder = funder or os.getenv("POLYMARKET_FUNDER", "") or None
         self.timeout = timeout
         self._clob = None
         self._http = None
@@ -82,11 +94,16 @@ class PolymarketVenue(TradingVenue):
                     api_secret=self.api_creds["secret"],
                     api_passphrase=self.api_creds["passphrase"],
                 )
-            self._clob = ClobClient(
-                self.clob_url, key=self.private_key, chain_id=self.chain_id, creds=creds
-            )
-            if creds is None:
-                # Derive/refresh L2 API credentials from the EOA key.
+            kwargs = {"key": self.private_key, "chain_id": self.chain_id,
+                      "signature_type": self.signature_type}
+            if self.funder:
+                kwargs["funder"] = self.funder
+            self._clob = ClobClient(self.clob_url, **kwargs)
+            # L2 API creds authenticate read/trade endpoints. Use provided ones
+            # or derive them deterministically from the signing key.
+            if creds is not None:
+                self._clob.set_api_creds(creds)
+            else:
                 self._clob.set_api_creds(self._clob.create_or_derive_api_creds())
         return self._clob
 
@@ -152,19 +169,20 @@ class PolymarketVenue(TradingVenue):
     # ---------------------------------------------------------------- trading
     def submit_order(self, order: Order) -> Order:
         try:
-            from py_clob_client.clob_types import OrderArgs
+            from py_clob_client.clob_types import OrderArgs, OrderType
             from py_clob_client.order_builder.constants import BUY, SELL
         except ImportError as e:  # pragma: no cover
             raise BrokerError("py-clob-client not installed") from e
 
         client = self._clob_client()
         side = BUY if order.side == OrderSide.BUY else SELL
-        # Polymarket requires a limit price (probability) per outcome token.
+        # Polymarket requires a limit price (probability, 0-1) per outcome token.
         price = order.limit_price if order.limit_price is not None else self.get_ticker(order.symbol)
         args = OrderArgs(token_id=order.symbol, price=float(price), size=float(order.qty), side=side)
         try:
             signed = client.create_order(args)
-            resp = client.post_order(signed)
+            # GTC = good-till-cancelled limit order on the CLOB.
+            resp = client.post_order(signed, OrderType.GTC)
         except Exception as e:  # pragma: no cover
             raise BrokerError(f"polymarket order error: {e}") from e
         order.venue_order_id = str(resp.get("orderID") or resp.get("id") or "")
@@ -196,13 +214,30 @@ class PolymarketVenue(TradingVenue):
         ]
 
     def get_balances(self) -> list[Balance]:
-        # Collateral is USDC on Polygon.
+        # Collateral is USDC on Polygon; the CLOB exposes it via balance/allowance.
+        free = 0.0
         try:
-            bal = self._clob_client().get_balance_allowance()
-            free = float(bal.get("balance", 0) or 0)
+            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
+            params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            bal = self._clob_client().get_balance_allowance(params)
+            # SDK returns USDC in 6-decimal base units.
+            raw = bal.get("balance", 0) if isinstance(bal, dict) else getattr(bal, "balance", 0)
+            free = float(raw or 0) / 1e6
         except Exception:  # pragma: no cover
             free = 0.0
         return [Balance(currency="USDC", free=free, total=free)]
+
+    def update_allowance(self) -> dict:
+        """Approve the CLOB exchange to move your USDC collateral (one-time).
+
+        Required before the first trade. With a relayer key this is gasless;
+        otherwise the signing wallet needs a little MATIC for gas.
+        """
+        from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
+        params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+        return self._clob_client().update_balance_allowance(params)
 
     def get_trade_history(self, symbol: str | None = None, limit: int = 100) -> list[dict]:
         try:
