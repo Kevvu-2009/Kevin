@@ -76,6 +76,7 @@ def cmd_download(args) -> int:
         print(f"Stored {n} rows")
     elif args.out:
         out = args.out
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
         if Path(out).suffix in (".parquet", ".pq"):
             try:
                 df.to_parquet(out)
