@@ -51,6 +51,24 @@ def _load_frame(path: str):
     return df.sort_index()
 
 
+def _resolve_params(args) -> dict:
+    """Strategy params from --params (inline JSON) or --params-file (a path).
+
+    The file may be a bare param dict, or an optimizer result (as written by
+    ``optimize --out ...``), in which case its ``best_params`` are used. This
+    lets you feed tuned params straight back in without pasting JSON in the shell.
+    """
+    if getattr(args, "params", None):
+        return json.loads(args.params)
+    pf = getattr(args, "params_file", None)
+    if pf:
+        data = json.loads(Path(pf).read_text())
+        if isinstance(data, dict) and "best_params" in data:
+            return data["best_params"] or {}
+        return data or {}
+    return {}
+
+
 # --------------------------------------------------------------------- commands
 def cmd_init_db(args) -> int:
     from quantbot.data.db import init_schema
@@ -99,7 +117,7 @@ def cmd_backtest(args) -> int:
 
     s = get_settings()
     df = _load_frame(args.data)
-    params = json.loads(args.params) if args.params else {}
+    params = _resolve_params(args)
     strat = get_strategy(args.strategy, **params)
     engine = BacktestEngine(costs=s.costs, risk_per_trade=s.risk.risk_per_trade)
     res = engine.run(strat, df, args.timeframe)
@@ -131,7 +149,7 @@ def cmd_validate(args) -> int:
 
     s = get_settings()
     df = _load_frame(args.data)
-    params = json.loads(args.params) if args.params else {}
+    params = _resolve_params(args)
     is_df, oos_df = is_oos_split(df, 0.70)
     eng = BacktestEngine(costs=s.costs, risk_per_trade=s.risk.risk_per_trade)
     is_res = eng.run(get_strategy(args.strategy, **params), is_df, args.timeframe)
@@ -155,7 +173,7 @@ def cmd_run(args) -> int:
 
     s = get_settings()
     df = _load_frame(args.data)
-    strat = get_strategy(args.strategy, **(json.loads(args.params) if args.params else {}))
+    strat = get_strategy(args.strategy, **_resolve_params(args))
     broker = PaperBroker(starting_cash=args.equity, costs=s.costs)
     engine = LiveEngine(broker, {args.symbol: strat}, settings=s, starting_equity=args.equity)
 
@@ -199,6 +217,8 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--data", required=True)
     d.add_argument("--timeframe", default="1h")
     d.add_argument("--params", default=None, help="JSON param dict")
+    d.add_argument("--params-file", default=None,
+                   help="Path to a JSON param dict or an optimize --out result")
     d.add_argument("--report", default=None, help="HTML report path")
     d.set_defaults(func=cmd_backtest)
 
@@ -215,6 +235,8 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--data", required=True)
     d.add_argument("--timeframe", default="1h")
     d.add_argument("--params", default=None)
+    d.add_argument("--params-file", default=None,
+                   help="Path to a JSON param dict or an optimize --out result")
     d.set_defaults(func=cmd_validate)
 
     d = sub.add_parser("run")
@@ -223,6 +245,8 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--data", required=True)
     d.add_argument("--timeframe", default="1h")
     d.add_argument("--params", default=None)
+    d.add_argument("--params-file", default=None,
+                   help="Path to a JSON param dict or an optimize --out result")
     d.add_argument("--equity", type=float, default=10_000.0)
     d.add_argument("--warmup", type=int, default=200)
     d.set_defaults(func=cmd_run)
