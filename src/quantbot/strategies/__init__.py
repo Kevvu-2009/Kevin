@@ -5,6 +5,7 @@ from quantbot.strategies.registry import get_strategy, list_strategies, register
 
 # Importing the concrete strategies registers them via the @register decorator.
 from quantbot.strategies import (  # noqa: E402,F401
+    breakout_rr,
     mean_reversion,
     momentum_breakout,
     regime_adaptive,

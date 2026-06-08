@@ -10,7 +10,11 @@ Deliberately *not* simplistic.  It models:
 * **Risk-based sizing** — quantity is set so a stop-out loses ~``risk_per_trade``
   of current equity, capped at no-leverage (1x) notional.
 * **Trailing ATR stops** — the per-bar stop from the strategy ratchets upward
-  only and is checked intrabar against the bar low.
+  only and is checked intrabar against the bar low.  Strategies may set
+  ``trail=False`` to hold the entry stop fixed (for fixed reward:risk setups).
+* **Take-profit targets** — an optional per-bar target price; a bar whose high
+  reaches it books the trade at the target.  If a bar spans both the stop and
+  the target, the stop is assumed hit first (conservative).
 
 The engine is long-only and single-position-per-instrument, matching the
 strategy library.  It returns an equity curve, a trade blotter and the realised
@@ -66,6 +70,12 @@ class BacktestEngine:
         entries = sig.entries.to_numpy(dtype=bool)
         exits = sig.exits.to_numpy(dtype=bool)
         stop_arr = sig.stop.to_numpy(dtype=float)
+        tp_arr = (
+            sig.take_profit.to_numpy(dtype=float)
+            if sig.take_profit is not None
+            else np.full(len(df), np.nan)
+        )
+        trail = sig.trail
 
         op = df["open"].to_numpy(dtype=float)
         hi = df["high"].to_numpy(dtype=float)
@@ -85,6 +95,7 @@ class BacktestEngine:
         qty = 0.0
         entry_price = 0.0
         stop_price = np.nan
+        tp_price = np.nan
         entry_i = -1
         pending_entry = False  # signal seen, awaiting latency to fill
 
@@ -122,18 +133,23 @@ class BacktestEngine:
                     qty = q
                     entry_price = fill
                     stop_price = init_stop
+                    tp_price = tp_arr[i - 1] if i > 0 else np.nan
                     entry_i = i
                 pending_entry = False
 
-            # 2) Manage an open position: trailing stop + exits.
+            # 2) Manage an open position: stop / take-profit / exit signal.
             if in_pos:
-                # Ratchet the stop upward using the strategy's per-bar stop.
-                s = stop_arr[i]
-                if not np.isnan(s):
-                    stop_price = s if np.isnan(stop_price) else max(stop_price, s)
+                # Ratchet the stop upward using the strategy's per-bar stop,
+                # unless the strategy asked for a fixed (non-trailing) stop.
+                if trail:
+                    s = stop_arr[i]
+                    if not np.isnan(s):
+                        stop_price = s if np.isnan(stop_price) else max(stop_price, s)
 
                 exited = False
                 # 2a) Intrabar stop-out (assume gap/slip through the stop).
+                #     Checked before the target: if a bar spans both levels we
+                #     conservatively assume the loss was hit first.
                 if not np.isnan(stop_price) and lo[i] <= stop_price:
                     fill = min(price_open, stop_price) * (1 - slip)
                     cash += qty * fill
@@ -141,10 +157,21 @@ class BacktestEngine:
                     trades.append(
                         _trade_record(idx, entry_i, i, entry_price, fill, qty, "stop")
                     )
-                    in_pos, qty, stop_price, entry_i = False, 0.0, np.nan, -1
+                    in_pos, qty, stop_price, tp_price, entry_i = False, 0.0, np.nan, np.nan, -1
                     exited = True
 
-                # 2b) Strategy exit signal → fill next bar open (latency).
+                # 2b) Intrabar take-profit (target touched by the bar high).
+                if not exited and not np.isnan(tp_price) and hi[i] >= tp_price:
+                    fill = max(price_open, tp_price) * (1 - slip)
+                    cash += qty * fill
+                    cash -= qty * fill * fee
+                    trades.append(
+                        _trade_record(idx, entry_i, i, entry_price, fill, qty, "take_profit")
+                    )
+                    in_pos, qty, stop_price, tp_price, entry_i = False, 0.0, np.nan, np.nan, -1
+                    exited = True
+
+                # 2c) Strategy exit signal → fill next bar open (latency).
                 if not exited and exits[i]:
                     # schedule exit at next open
                     if i + 1 < n:
@@ -154,7 +181,7 @@ class BacktestEngine:
                         trades.append(
                             _trade_record(idx, entry_i, i + 1, entry_price, fill, qty, "signal")
                         )
-                        in_pos, qty, stop_price, entry_i = False, 0.0, np.nan, -1
+                        in_pos, qty, stop_price, tp_price, entry_i = False, 0.0, np.nan, np.nan, -1
                         exited = True
 
             # 3) Look for a new entry signal (fills after latency).

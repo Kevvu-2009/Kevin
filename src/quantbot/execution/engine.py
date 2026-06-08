@@ -37,6 +37,8 @@ class TrackedPosition:
     entry_price: float
     stop_price: float
     strategy_name: str
+    take_profit: float = float("nan")
+    trail: bool = True
     opened_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -77,19 +79,27 @@ class LiveEngine:
         entry = bool(sig.entries.iloc[i])
         exit_ = bool(sig.exits.iloc[i])
         stop = float(sig.stop.iloc[i]) if not np.isnan(sig.stop.iloc[i]) else np.nan
+        tp = (
+            float(sig.take_profit.iloc[i])
+            if sig.take_profit is not None and not np.isnan(sig.take_profit.iloc[i])
+            else np.nan
+        )
 
         log_signal(log, symbol=symbol, strategy=strat.name, price=last_price,
                    entry=entry, exit=exit_, stop=None if np.isnan(stop) else stop)
 
         pos = self.positions.get(symbol)
 
-        # 1) Manage open position: stop-out or exit signal.
+        # 1) Manage open position: stop / take-profit / exit signal.
         if pos is not None:
-            # ratchet trailing stop up
-            if not np.isnan(stop):
+            # Ratchet a trailing stop up (skip for fixed-stop strategies).
+            if pos.trail and not np.isnan(stop):
                 pos.stop_price = max(pos.stop_price, stop) if pos.stop_price else stop
             if pos.stop_price and last_price <= pos.stop_price:
                 self._close(symbol, last_price, reason="stop")
+                return
+            if not np.isnan(pos.take_profit) and last_price >= pos.take_profit:
+                self._close(symbol, last_price, reason="take_profit")
                 return
             if exit_:
                 self._close(symbol, last_price, reason="signal")
@@ -97,7 +107,7 @@ class LiveEngine:
 
         # 2) Consider a new entry.
         if pos is None and entry:
-            self._try_open(symbol, strat.name, last_price, stop)
+            self._try_open(symbol, strat.name, last_price, stop, tp, sig.trail)
 
         self._persist()
 
@@ -107,7 +117,8 @@ class LiveEngine:
             self._close(symbol, price, reason=reason)
 
     # ---------------------------------------------------------------- private
-    def _try_open(self, symbol: str, strat_name: str, price: float, stop: float) -> None:
+    def _try_open(self, symbol: str, strat_name: str, price: float, stop: float,
+                  take_profit: float = float("nan"), trail: bool = True) -> None:
         self.risk.set_open_positions(len(self.positions))
         self.risk.update_equity(self._equity)
         decision = self.risk.can_open()
@@ -140,7 +151,7 @@ class LiveEngine:
             self.positions[symbol] = TrackedPosition(
                 symbol=symbol, qty=result.filled_qty,
                 entry_price=result.avg_fill_price, stop_price=stop_price,
-                strategy_name=strat_name,
+                strategy_name=strat_name, take_profit=take_profit, trail=trail,
             )
             log_strategy(log, symbol=symbol, action="opened", qty=result.filled_qty,
                          price=result.avg_fill_price, stop=stop_price, risk_cash=sizing.risk_cash)

@@ -12,7 +12,13 @@ Signal contract (all indexed identically to the input frame):
     stop        : float — current protective stop *price* while in a position
                           (NaN when no stop applies); the engine treats a bar
                           whose low pierces this level as a stop-out.
+    take_profit : float — optional target *price*; a bar whose high reaches it
+                          books the trade at the target (None/NaN = no target).
     direction  : int   — +1 long (shorts reserved; these strategies are long-only)
+
+``trail`` controls whether the engine ratchets the stop upward each bar (the
+default, for trend strategies) or holds the entry stop fixed (set False for
+fixed reward:risk strategies so the R:R target is not eroded by a moving stop).
 
 Strategies expose ``param_space`` for the optimizer and ``default_params``.
 """
@@ -34,13 +40,16 @@ class StrategyResult:
     entries: pd.Series
     exits: pd.Series
     stop: pd.Series
+    take_profit: pd.Series | None = None
+    trail: bool = True
     direction: int = 1
     meta: dict[str, Any] = field(default_factory=dict)
 
     def as_frame(self) -> pd.DataFrame:
-        return pd.DataFrame(
-            {"entries": self.entries, "exits": self.exits, "stop": self.stop}
-        )
+        data = {"entries": self.entries, "exits": self.exits, "stop": self.stop}
+        if self.take_profit is not None:
+            data["take_profit"] = self.take_profit
+        return pd.DataFrame(data)
 
 
 class Strategy(ABC):
