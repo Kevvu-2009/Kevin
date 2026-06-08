@@ -1,0 +1,81 @@
+# ============================================================================
+# QuantBot stack: Postgres + Redis + dashboard + trading engine.
+# Usage:  docker compose -f docker/docker-compose.yml --env-file .env up -d
+# ============================================================================
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-quantbot}
+      POSTGRES_USER: ${POSTGRES_USER:-quantbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Schema is applied automatically on first init.
+      - ../sql/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-quantbot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  engine:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      QUANTBOT_MODE: ${QUANTBOT_MODE:-paper}
+    # Example: replay paper-trade BTC on the approved trend strategy.
+    # Replace with your live data loop / approved strategy invocation.
+    command: >
+      python -m quantbot.cli run
+      --strategy trend_following --symbol BTC/USDT
+      --data /app/artifacts/BTC_4h.parquet --timeframe 4h
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    profiles: ["trade"]   # opt-in: `--profile trade`
+
+volumes:
+  pgdata:
+  redisdata:
