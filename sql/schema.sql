@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS approved_strategies (
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS accounts (
     id          BIGSERIAL PRIMARY KEY,
-    venue       TEXT        NOT NULL,           -- bullpen | polymarket | paper
+    venue       TEXT        NOT NULL,           -- hyperliquid | bullpen | paper
     mode        TEXT        NOT NULL,           -- paper | live
     equity      NUMERIC(38, 12) NOT NULL DEFAULT 0,
     peak_equity NUMERIC(38, 12) NOT NULL DEFAULT 0,

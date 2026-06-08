@@ -1,6 +1,6 @@
 """Common trading-venue interface.
 
-Every venue (Bullpen, Polymarket, the paper broker) implements ``TradingVenue``
+Every venue (Hyperliquid, Bullpen, the paper broker) implements ``TradingVenue``
 so the execution engine is venue-agnostic.  Domain objects are plain dataclasses
 to avoid coupling to any venue's wire format.
 """

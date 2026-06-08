@@ -22,7 +22,7 @@ promotes strategies that clear strict profitability and risk gates.
 | **Optimization** | Bayesian (Optuna TPE) with random-search fallback; composite objective that penalises drawdown and the IS↔OOS gap to fight overfitting |
 | **Risk** | Fixed-fractional & volatility-adjusted sizing (0.5–1%/trade), 5-position cap, 3% daily / 8% weekly loss limits, 20% drawdown kill switch |
 | **Execution** | Venue-agnostic engine, order manager with retries + idempotency, paper broker, state persistence |
-| **Integrations** | **Hyperliquid (spot + perps — recommended for OHLCV strategies, key-based API)**, Polymarket (CLOB, prediction markets), Bullpen (scaffold); env-var credentials |
+| **Integrations** | **Hyperliquid (spot + perps, key-based API)** for live trading + public OHLCV; Bullpen (scaffold); env-var credentials |
 | **Monitoring** | FastAPI + Plotly dashboard: positions, daily/weekly PnL, equity curve, drawdown, active strategies, risk metrics |
 | **Ops** | Dockerfile, docker-compose (Postgres+Redis+dashboard+engine), structured logging, runbook |
 
@@ -106,7 +106,7 @@ src/quantbot/
 ├── optimization/        # Bayesian optimizer (+ random fallback)
 ├── risk/                # position_sizing, portfolio controls / kill switch
 ├── execution/           # live engine, order_manager, paper_broker, state
-├── integrations/        # base venue interface, bullpen, polymarket
+├── integrations/        # base venue interface, hyperliquid, bullpen
 └── monitoring/          # FastAPI + Plotly dashboard
 sql/schema.sql           # PostgreSQL schema
 docker/                  # Dockerfile + docker-compose
@@ -119,7 +119,7 @@ docs/                    # INSTALLATION, RUNBOOK, STRATEGY_REPORT
 
 - **Heavy deps are lazy.** Core analytics import only numpy/pandas/scipy, so the
   test suite and the demo run anywhere; CCXT, SQLAlchemy, Optuna, FastAPI, the
-  Polymarket SDK, etc. are imported only where used.
+  Hyperliquid SDK, etc. are imported only where used.
 - **No look-ahead.** Signals are formed at bar close and filled on the next bar;
   Donchian/Bollinger references use the prior bar.
 - **Credentials only via env.** Nothing is committed. See `.env.example`.

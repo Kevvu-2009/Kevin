@@ -1,4 +1,4 @@
-"""Venue integrations: common interface + Bullpen and Polymarket clients."""
+"""Venue integrations: common interface + Hyperliquid (and Bullpen scaffold)."""
 
 from quantbot.integrations.base import (
     Balance,

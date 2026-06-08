@@ -45,7 +45,7 @@ Edit `.env`:
 | `RISK_PER_TRADE` | 0.005–0.01 (clamped) |
 | `MAX_CONCURRENT_POSITIONS`, `DAILY_LOSS_LIMIT`, `WEEKLY_LOSS_LIMIT`, `KILL_SWITCH_DRAWDOWN` | risk limits |
 | `BULLPEN_*` | Bullpen API credentials/URLs |
-| `POLYMARKET_*` | Polymarket key / CLOB / Gamma config |
+| `HYPERLIQUID_*` | Hyperliquid API-wallet key + main account address (live venue) |
 
 **Never commit `.env`.** It is git-ignored.
 
