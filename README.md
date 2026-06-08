@@ -22,7 +22,7 @@ promotes strategies that clear strict profitability and risk gates.
 | **Optimization** | Bayesian (Optuna TPE) with random-search fallback; composite objective that penalises drawdown and the IS↔OOS gap to fight overfitting |
 | **Risk** | Fixed-fractional & volatility-adjusted sizing (0.5–1%/trade), 5-position cap, 3% daily / 8% weekly loss limits, 20% drawdown kill switch |
 | **Execution** | Venue-agnostic engine, order manager with retries + idempotency, paper broker, state persistence |
-| **Integrations** | Bullpen (REST/HMAC) and Polymarket (Gamma + CLOB) modules, env-var credentials |
+| **Integrations** | **Hyperliquid (spot + perps — recommended for OHLCV strategies, key-based API)**, Polymarket (CLOB, prediction markets), Bullpen (scaffold); env-var credentials |
 | **Monitoring** | FastAPI + Plotly dashboard: positions, daily/weekly PnL, equity curve, drawdown, active strategies, risk metrics |
 | **Ops** | Dockerfile, docker-compose (Postgres+Redis+dashboard+engine), structured logging, runbook |
 
