@@ -171,11 +171,11 @@ def write_research_report(
     paths["leaderboard_csv"] = csv_path
 
     md_path = out / "report.md"
-    md_path.write_text(render_markdown(result, title))
+    md_path.write_text(render_markdown(result, title), encoding="utf-8")
     paths["report_md"] = md_path
 
     html_path = out / "report.html"
-    html_path.write_text(render_html(result, title, equity_curves))
+    html_path.write_text(render_html(result, title, equity_curves), encoding="utf-8")
     paths["report_html"] = html_path
 
     summary = {
@@ -199,6 +199,6 @@ def write_research_report(
         "notes": result.notes,
     }
     json_path = out / "summary.json"
-    json_path.write_text(json.dumps(summary, indent=2, default=str))
+    json_path.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
     paths["summary_json"] = json_path
     return paths

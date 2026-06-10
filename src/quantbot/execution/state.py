@@ -54,7 +54,7 @@ class StateStore:
             self._redis.set(self.key, payload)
         else:
             self.file_path.parent.mkdir(parents=True, exist_ok=True)
-            self.file_path.write_text(payload)
+            self.file_path.write_text(payload, encoding="utf-8")
 
     def load(self) -> EngineState | None:
         if self._redis is not None:
@@ -63,5 +63,5 @@ class StateStore:
                 return EngineState.from_json(raw.decode() if isinstance(raw, bytes) else raw)
             return None
         if self.file_path.exists():
-            return EngineState.from_json(self.file_path.read_text())
+            return EngineState.from_json(self.file_path.read_text(encoding="utf-8"))
         return None

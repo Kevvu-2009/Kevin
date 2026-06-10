@@ -146,7 +146,7 @@ def cmd_optimize(args) -> int:
     res = opt.optimize()
     print(json.dumps(res.to_dict(), indent=2, default=str))
     if args.out:
-        Path(args.out).write_text(json.dumps(res.to_dict(), indent=2, default=str))
+        Path(args.out).write_text(json.dumps(res.to_dict(), indent=2, default=str), encoding="utf-8")
     return 0
 
 

@@ -39,7 +39,7 @@ def to_json(result: BacktestResult, path: str | Path) -> Path:
         "metrics": result.stats,
         "n_trades": int(len(result.trades)),
     }
-    path.write_text(json.dumps(payload, indent=2, default=str))
+    path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
     return path
 
 
