@@ -1,0 +1,47 @@
+# =============================================================================
+# Edge-discovery configuration.
+# Copy to config/discovery.yaml and edit. Used by:
+#   python -m quantbot.cli discover --config config/discovery.yaml
+# =============================================================================
+
+data:
+  exchange: binance          # binance | bybit | kraken | coinbase | hyperliquid
+  symbols:
+    - BTC/USDT
+    - ETH/USDT
+    - SOL/USDT
+    - BNB/USDT
+  timeframe: 1h              # 5m | 15m | 1h | 4h | 1d
+  since: "2021-01-01"        # history start for the first download
+  cache_dir: data_cache      # local parquet/csv cache (incremental updates)
+  refresh: true              # false = offline, use cache as-is
+
+research:
+  families: []               # empty = all; or e.g. [trend, momentum, regime]
+  exclude_signals: []        # e.g. [corr_breakdown]
+  include_ml: true           # ML candidates are the slowest part of the sweep
+  is_frac: 0.70              # in-sample fraction for parameter selection
+  wf_splits: 4               # walk-forward windows
+  mc_sims: 500               # Monte Carlo bootstrap paths
+  min_bars: 2000             # refuse to validate shorter series
+  max_pairs: 4               # stat-arb pair slots (pre-screened by cointegration)
+
+costs:                       # per-side, basis points
+  fee_bps: 4.0               # taker fee
+  slippage_bps: 3.0          # expected impact / adverse fill
+  spread_bps: 2.0            # full quoted spread (half charged per side)
+
+gates:                       # hard accept/reject thresholds (OOS unless noted)
+  min_oos_sharpe: 1.0
+  min_oos_profit_factor: 1.15
+  max_oos_drawdown: 0.25
+  min_oos_trades: 25
+  min_oos_is_sharpe_ratio: 0.4
+  min_wf_positive_windows: 0.5
+  max_mc_p05_drawdown: 0.35
+  min_sensitivity_retention: 0.3
+  min_deflated_prob: 0.80
+  worst_regime_max_drawdown: 0.35
+
+output:
+  dir: reports/research      # leaderboard.csv, report.md, report.html, summary.json

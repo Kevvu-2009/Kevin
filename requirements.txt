@@ -3,6 +3,12 @@ numpy>=1.26
 pandas>=2.1
 scipy>=1.11
 
+# ---- Research / ML (edge discovery) ----
+scikit-learn>=1.4        # ML signals, purged CV, model zoo
+statsmodels>=0.14        # cointegration tests (Engle-Granger ADF)
+# xgboost>=2.0           # optional: model zoo falls back to sklearn HistGB
+PyYAML>=6.0              # discovery / live YAML configs
+
 # ---- Data / connectivity ----
 ccxt>=4.2                # exchange connectivity (OHLCV download, optional live)
 SQLAlchemy>=2.0          # ORM for PostgreSQL storage

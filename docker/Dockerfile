@@ -25,6 +25,7 @@ COPY pyproject.toml ./
 COPY src ./src
 COPY sql ./sql
 COPY scripts ./scripts
+COPY config ./config
 RUN pip install -e .
 
 # Non-root runtime user.

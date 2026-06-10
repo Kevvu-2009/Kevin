@@ -1,0 +1,46 @@
+# =============================================================================
+# Live/paper trading configuration (Hyperliquid).
+# Copy to config/live.yaml and edit. Secrets stay in .env — NEVER here.
+#   python -m quantbot.cli run --config config/live.yaml
+# =============================================================================
+
+venue:
+  name: hyperliquid
+  testnet: true              # ALWAYS start on testnet / paper
+  # Credentials come from environment (.env):
+  #   HYPERLIQUID_SECRET_KEY      — API-wallet (agent) private key
+  #   HYPERLIQUID_ACCOUNT_ADDRESS — main wallet address
+
+mode: paper                  # paper | live  (live also requires QUANTBOT_MODE=live)
+
+trading:
+  symbols: [BTC/USDT, ETH/USDT]
+  timeframe: 4h
+  leverage: 1                # applied per symbol on startup (cross margin)
+  strategies:                # only validated, gate-passing strategies
+    - name: trend_following
+      params: {}             # empty = registry defaults / params file
+  poll_seconds: 30           # bar-close polling cadence
+
+risk:
+  risk_per_trade: 0.0075     # fraction of equity risked per trade (0.5–1%)
+  max_concurrent_positions: 3
+  max_position_notional_pct: 0.35   # single-position cap as fraction of equity
+  max_gross_exposure: 1.0           # portfolio gross cap (1.0 = no leverage)
+  daily_loss_limit: 0.03
+  weekly_loss_limit: 0.08
+  kill_switch_drawdown: 0.20
+
+execution:
+  order_type: market         # market | limit
+  limit_offset_bps: 2        # for limit orders: improvement vs mid
+  max_retries: 4
+  stop_loss: true            # protective trigger order placed with entry
+  take_profit: false         # optional TP trigger order
+  reduce_only_exits: true    # exits can only reduce, never flip
+
+safety:
+  require_validation_report: true   # refuse live unless reports/research exists
+  api_timeout_s: 10
+  max_consecutive_errors: 5         # auto-shutdown after N consecutive API errors
+  heartbeat_minutes: 5

@@ -17,13 +17,17 @@ env/
 # Data / artifacts
 data/raw/
 data/parquet/
+data_cache/
 artifacts/
-reports/*.html
-reports/*.json
+reports/
 *.sqlite
 *.db
 *.log
 logs/
+
+# Local (non-example) configs may embed account details
+config/*.yaml
+!config/*.example.yaml
 
 # Tooling
 .pytest_cache/

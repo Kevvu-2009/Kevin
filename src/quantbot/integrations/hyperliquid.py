@@ -49,6 +49,40 @@ def coin_of(symbol: str) -> str:
     return symbol.split("/")[0].split("-")[0].upper()
 
 
+class RateLimiter:
+    """Token-bucket limiter for REST calls.
+
+    Hyperliquid's address-based budget is generous for a bar-close bot, but
+    bursts (startup reconciliation, flatten-all) can exceed the per-second
+    courtesy limit — this smooths them out.
+    """
+
+    def __init__(self, max_calls: int = 8, per_seconds: float = 1.0) -> None:
+        self.max_calls = max_calls
+        self.per_seconds = per_seconds
+        self._stamps: list[float] = []
+
+    def acquire(self, sleep=time.sleep) -> None:
+        now = time.monotonic()
+        self._stamps = [t for t in self._stamps if now - t < self.per_seconds]
+        if len(self._stamps) >= self.max_calls:
+            wait = self.per_seconds - (now - self._stamps[0])
+            if wait > 0:
+                sleep(wait)
+        self._stamps.append(time.monotonic())
+
+
+_TRANSPORT_HINTS = ("timeout", "timed out", "connection", "reset", "refused",
+                    "temporarily unavailable", "502", "503", "504", "rate limit", "429")
+
+
+def _is_transport_error(e: Exception) -> bool:
+    """Transient transport/venue congestion — safe to retry after reconnect."""
+    if isinstance(e, (ConnectionError, TimeoutError, OSError)):
+        return True
+    return any(h in str(e).lower() for h in _TRANSPORT_HINTS)
+
+
 class HyperliquidVenue(TradingVenue):
     name = "hyperliquid"
 
@@ -67,6 +101,7 @@ class HyperliquidVenue(TradingVenue):
         self._info = None
         self._exchange = None
         self._account = None
+        self._rate_limiter = RateLimiter()
 
     # ------------------------------------------------------------- transport
     def _urls(self):
@@ -75,6 +110,32 @@ class HyperliquidVenue(TradingVenue):
         if self._base_url:
             return self._base_url
         return constants.TESTNET_API_URL if self.testnet else constants.MAINNET_API_URL
+
+    def _reconnect(self) -> None:
+        """Drop cached clients; the next call rebuilds fresh HTTP sessions."""
+        self._info = None
+        self._exchange = None
+        log.warning("hyperliquid_reconnect", testnet=self.testnet)
+
+    def _call(self, fn, *args, _retries: int = 3, _sleep=time.sleep, **kwargs):
+        """Rate-limited call with reconnect + exponential backoff on transient
+        transport errors.  Non-transport errors (rejections, bad params)
+        propagate immediately — retrying those would be unsafe."""
+        last: Exception | None = None
+        for attempt in range(_retries + 1):
+            self._rate_limiter.acquire(sleep=_sleep)
+            try:
+                return fn(*args, **kwargs)
+            except Exception as e:  # noqa: BLE001 - classified below
+                if not _is_transport_error(e) or attempt == _retries:
+                    raise
+                last = e
+                delay = 2.0**attempt
+                log.warning("hyperliquid_transport_retry", attempt=attempt,
+                            delay=delay, error=str(e)[:200])
+                self._reconnect()
+                _sleep(delay)
+        raise BrokerError(f"hyperliquid call failed after retries: {last}")
 
     def info(self):
         """Public info client (no auth needed)."""
@@ -118,7 +179,7 @@ class HyperliquidVenue(TradingVenue):
 
     # ----------------------------------------------------------- market data
     def get_ticker(self, symbol: str) -> float:
-        mids = self.info().all_mids()
+        mids = self._call(lambda: self.info().all_mids())
         coin = coin_of(symbol)
         if coin not in mids:
             raise BrokerError(f"no mid price for {coin}")
@@ -130,26 +191,61 @@ class HyperliquidVenue(TradingVenue):
         coin = coin_of(symbol)
         end = int(time.time() * 1000)
         start = end - limit * _TF_MS[timeframe]
-        raw = self.info().candles_snapshot(coin, _INTERVALS[timeframe], start, end)
+        raw = self._call(
+            lambda: self.info().candles_snapshot(coin, _INTERVALS[timeframe], start, end)
+        )
         return [_to_candle(c) for c in (raw or [])][-limit:]
 
     # ---------------------------------------------------------------- trading
     def submit_order(self, order: Order) -> Order:
-        ex = self._exch()
         coin = coin_of(order.symbol)
         is_buy = order.side == OrderSide.BUY
+        qty = float(order.qty)
         try:
             if order.type == OrderType.MARKET:
-                # SDK computes an aggressive price from the current mid + slippage.
-                resp = ex.market_open(coin, is_buy, float(order.qty), None, _DEFAULT_SLIPPAGE)
-            else:
+                if order.reduce_only:
+                    # Reduce-only market exit: sized close of the open position.
+                    resp = self._call(
+                        lambda: self._exch().market_close(coin, qty, None, _DEFAULT_SLIPPAGE)
+                    )
+                else:
+                    # SDK computes an aggressive IOC price from mid + slippage.
+                    resp = self._call(
+                        lambda: self._exch().market_open(coin, is_buy, qty, None, _DEFAULT_SLIPPAGE)
+                    )
+            elif order.type == OrderType.LIMIT:
                 px = float(order.limit_price)
-                resp = ex.order(coin, is_buy, float(order.qty), px, {"limit": {"tif": "Gtc"}})
+                resp = self._call(
+                    lambda: self._exch().order(
+                        coin, is_buy, qty, px, {"limit": {"tif": "Gtc"}},
+                        reduce_only=order.reduce_only,
+                    )
+                )
+            elif order.type in (OrderType.STOP_MARKET, OrderType.TAKE_PROFIT):
+                if order.trigger_price is None:
+                    raise BrokerError(f"{order.type.value} requires trigger_price")
+                trig = float(order.trigger_price)
+                tpsl = "sl" if order.type == OrderType.STOP_MARKET else "tp"
+                # limit_px bounds the post-trigger fill; for market-style
+                # execution Hyperliquid expects an aggressive bound.
+                bound = trig * (1 + _DEFAULT_SLIPPAGE) if is_buy else trig * (1 - _DEFAULT_SLIPPAGE)
+                resp = self._call(
+                    lambda: self._exch().order(
+                        coin, is_buy, qty, bound,
+                        {"trigger": {"isMarket": True, "triggerPx": trig, "tpsl": tpsl}},
+                        reduce_only=True,  # protective orders must never open exposure
+                    )
+                )
+            else:  # pragma: no cover - enum exhaustive
+                raise BrokerError(f"unsupported order type {order.type}")
+        except BrokerError:
+            raise
         except Exception as e:  # pragma: no cover - network/signing
             raise BrokerError(f"hyperliquid order error: {e}") from e
         _apply_order_response(order, resp)
         log.info("hyperliquid_order", client_id=order.client_id, coin=coin,
-                 side=order.side.value, status=order.status.value,
+                 side=order.side.value, type=order.type.value,
+                 reduce_only=order.reduce_only, status=order.status.value,
                  venue_order_id=order.venue_order_id)
         return order
 
@@ -157,13 +253,31 @@ class HyperliquidVenue(TradingVenue):
         if symbol is None:
             raise BrokerError("hyperliquid cancel requires the symbol/coin")
         try:
-            resp = self._exch().cancel(coin_of(symbol), int(venue_order_id))
+            resp = self._call(
+                lambda: self._exch().cancel(coin_of(symbol), int(venue_order_id))
+            )
             return isinstance(resp, dict) and resp.get("status") == "ok"
         except Exception as e:  # pragma: no cover
             raise BrokerError(f"hyperliquid cancel error: {e}") from e
 
+    def set_leverage(self, symbol: str, leverage: int, is_cross: bool = True) -> dict:
+        """Set leverage for a coin (applied account-wide on Hyperliquid)."""
+        try:
+            resp = self._call(
+                lambda: self._exch().update_leverage(int(leverage), coin_of(symbol), is_cross)
+            )
+        except Exception as e:  # pragma: no cover
+            raise BrokerError(f"hyperliquid set_leverage error: {e}") from e
+        log.info("hyperliquid_leverage_set", coin=coin_of(symbol),
+                 leverage=leverage, cross=is_cross)
+        return resp if isinstance(resp, dict) else {"status": str(resp)}
+
+    def get_open_orders(self) -> list[dict]:
+        """Resting orders for the account (oid, coin, side, px, sz)."""
+        return self._call(lambda: self.info().open_orders(self.address)) or []
+
     def get_positions(self) -> list[Position]:
-        us = self.info().user_state(self.address)
+        us = self._call(lambda: self.info().user_state(self.address))
         out = []
         for ap in us.get("assetPositions", []):
             p = ap.get("position", {})
@@ -183,14 +297,14 @@ class HyperliquidVenue(TradingVenue):
         return out
 
     def get_balances(self) -> list[Balance]:
-        us = self.info().user_state(self.address)
+        us = self._call(lambda: self.info().user_state(self.address))
         summary = us.get("marginSummary", {})
         total = float(summary.get("accountValue", 0) or 0)
         free = float(us.get("withdrawable", 0) or 0)
         return [Balance(currency="USDC", free=free, total=total)]
 
     def get_trade_history(self, symbol: str | None = None, limit: int = 100) -> list[dict]:
-        fills = self.info().user_fills(self.address) or []
+        fills = self._call(lambda: self.info().user_fills(self.address)) or []
         if symbol:
             coin = coin_of(symbol)
             fills = [f for f in fills if f.get("coin") == coin]

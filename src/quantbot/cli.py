@@ -3,11 +3,15 @@
 Subcommands:
     init-db       apply the SQL schema
     download      fetch historical OHLCV and store it
+    cache-data    download/incrementally update the local OHLCV cache
+    discover      edge-discovery sweep: all signal families × universe,
+                  full validation gauntlet, ranked leaderboard + reports
     backtest      run a single backtest and print/report metrics
     optimize      Bayesian parameter search (IS) with OOS validation
     validate      full validation pipeline + acceptance gates
-    research      end-to-end: optimize -> validate -> approve/reject
-    run           start the live/paper trading engine (replay or live loop)
+    run           bar-replay paper trading from a historical file
+    run-live      venue-driven loop: paper fills on live Hyperliquid data,
+                  or live orders (validation report + dual switches required)
     dashboard     launch the FastAPI monitoring dashboard
 
 Designed so the analytics subcommands work offline against parquet/CSV, while
@@ -274,6 +278,81 @@ def cmd_dashboard(args) -> int:
     return 0
 
 
+def cmd_run_live(args) -> int:
+    """Venue-driven trading loop (paper fills on live data, or live orders)."""
+    from quantbot.execution.live_runner import run_from_config
+
+    return run_from_config(args.config)
+
+
+def cmd_cache_data(args) -> int:
+    from quantbot.data.cache import DataCache
+
+    cache = DataCache(args.cache_dir)
+    symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+    panel = cache.update_universe(symbols, args.timeframe, args.exchange, args.since)
+    for sym, df in panel.items():
+        print(f"{sym:14s} {len(df):7d} bars  {df.index[0]} → {df.index[-1]}")
+    missing = set(symbols) - set(panel)
+    if missing:
+        print(f"FAILED: {sorted(missing)}")
+        return 1
+    return 0
+
+
+def cmd_discover(args) -> int:
+    """Run the edge-discovery sweep from a YAML config (or CLI flags)."""
+    from quantbot.config_files import discovery_config_from_yaml
+    from quantbot.data.cache import DataCache, load_panel
+    from quantbot.reporting.research_report import write_research_report
+    from quantbot.research.discovery import DiscoveryConfig, run_discovery
+
+    if args.config:
+        cfg, raw = discovery_config_from_yaml(args.config)
+        data_cfg = raw.get("data", {})
+        out_dir = raw.get("output", {}).get("dir", "reports/research")
+        symbols = data_cfg.get("symbols", [])
+        exchange = data_cfg.get("exchange", "binance")
+        cache_dir = data_cfg.get("cache_dir", "data_cache")
+        since = data_cfg.get("since")
+        refresh = bool(data_cfg.get("refresh", True))
+    else:
+        cfg = DiscoveryConfig(timeframe=args.timeframe)
+        symbols = [s.strip() for s in (args.symbols or "").split(",") if s.strip()]
+        exchange, cache_dir, since, refresh = args.exchange, args.cache_dir, args.since, not args.offline
+        out_dir = args.out
+
+    if not symbols:
+        raise SystemExit("no symbols configured (use --config or --symbols)")
+
+    cache = DataCache(cache_dir)
+    if refresh:
+        panel = cache.update_universe(symbols, cfg.timeframe, exchange, since)
+    else:
+        panel = load_panel(cache, symbols, cfg.timeframe, exchange)
+    if not panel:
+        raise SystemExit(
+            "no data available — run `quantbot cache-data` first or enable data.refresh"
+        )
+
+    result = run_discovery(panel, cfg)
+    paths = write_research_report(result, out_dir)
+    print(f"\nValidated {len(result.candidates)} candidates "
+          f"({result.n_trials} trials) in {result.runtime_s}s")
+    if result.found_edge:
+        print(f"Selected {len(result.selected)} robust edge(s):")
+        for cv in result.selected:
+            print(f"  {cv.robustness_score:6.1f}  {cv.signal_name:24s} "
+                  f"[{'+'.join(cv.symbols)}]  OOS Sharpe {cv.oos_stats['sharpe']:.2f}  "
+                  f"DSR {cv.deflated_prob:.2f}")
+    else:
+        print("NO ROBUST EDGE FOUND — no candidate cleared every gate. "
+              "Do not deploy; widen data, not gates.")
+    for k, v in paths.items():
+        print(f"  {k}: {v}")
+    return 0
+
+
 # ----------------------------------------------------------------------- parser
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser("quantbot", description="Systematic crypto trading system")
@@ -345,6 +424,33 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--port", type=int, default=8000)
     d.add_argument("--venue", default="paper")
     d.set_defaults(func=cmd_dashboard)
+
+    d = sub.add_parser("run-live",
+                       help="Venue-driven loop: paper fills on live Hyperliquid data, "
+                            "or live orders (requires validation + both live switches)")
+    d.add_argument("--config", required=True, help="YAML config (config/live.example.yaml)")
+    d.set_defaults(func=cmd_run_live)
+
+    d = sub.add_parser("cache-data",
+                       help="Download/incrementally update the local OHLCV cache")
+    d.add_argument("--symbols", required=True, help="comma-separated, e.g. BTC/USDT,ETH/USDT")
+    d.add_argument("--timeframe", default="1h")
+    d.add_argument("--exchange", default="binance")
+    d.add_argument("--since", default=None)
+    d.add_argument("--cache-dir", default="data_cache")
+    d.set_defaults(func=cmd_cache_data)
+
+    d = sub.add_parser("discover",
+                       help="Run the full edge-discovery sweep + validation gauntlet")
+    d.add_argument("--config", default=None, help="YAML config (config/discovery.example.yaml)")
+    d.add_argument("--symbols", default=None, help="comma-separated (if no --config)")
+    d.add_argument("--timeframe", default="1h")
+    d.add_argument("--exchange", default="binance")
+    d.add_argument("--since", default=None)
+    d.add_argument("--cache-dir", default="data_cache")
+    d.add_argument("--offline", action="store_true", help="use cache only, no downloads")
+    d.add_argument("--out", default="reports/research")
+    d.set_defaults(func=cmd_discover)
     return p
 
 

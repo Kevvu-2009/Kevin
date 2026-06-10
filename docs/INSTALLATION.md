@@ -17,15 +17,16 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 pip install -e .
 
-# OR core-only (analytics, backtest, validation, tests):
-pip install numpy pandas scipy pytest
+# OR core-only (analytics, backtest, validation, edge discovery, tests):
+pip install numpy pandas scipy scikit-learn statsmodels PyYAML pytest
 ```
 
 Verify:
 
 ```bash
 PYTHONPATH=src pytest -q
-PYTHONPATH=src python scripts/run_example_backtest.py
+PYTHONPATH=src python scripts/run_edge_discovery.py --calibrate   # discovery harness
+PYTHONPATH=src python scripts/run_example_backtest.py             # event engine demo
 ```
 
 ## 3. Configuration

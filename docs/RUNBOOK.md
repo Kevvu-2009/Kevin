@@ -31,7 +31,15 @@ Operational procedures for running QuantBot safely in paper and live modes.
 
 ## 2. Promoting a strategy to deployment
 
-A strategy is deployable **only** after it clears every gate
+Promotion starts upstream, in edge discovery (see
+[`RESEARCH_WORKFLOW.md`](RESEARCH_WORKFLOW.md)): the candidate's family must
+have survived the discovery gauntlet on current data first.
+
+```bash
+python -m quantbot.cli discover --config config/discovery.yaml   # edge must survive here first
+```
+
+A strategy is deployable **only** after it ALSO clears every event-engine gate
 (`quantbot.validation.gates`):
 
 ```bash
@@ -48,19 +56,34 @@ pipeline on fresh data.
 
 ---
 
-## 3. Going live (paper → live)
+## 3. Going live (paper → live, Hyperliquid)
 
 > Default is `paper`. Treat the switch to `live` as a change-controlled action.
 
-1. Smoke-test the venue connection in paper with real credentials loaded:
-   ```python
-   from quantbot.integrations.bullpen import BullpenVenue
-   v = BullpenVenue(); v.authenticate(); print(v.get_balances())
+1. **Paper on live data** (mandatory stage — PaperBroker fills, real
+   Hyperliquid market data, no credentials needed):
+   ```bash
+   cp config/live.example.yaml config/live.yaml      # mode: paper
+   python -m quantbot.cli run-live --config config/live.yaml
    ```
-2. Set `QUANTBOT_MODE=live` in `.env`.
-3. Start with the **minimum** `RISK_PER_TRADE` (0.5%) and a reduced position cap.
-4. Watch the first several trades end-to-end (signal → order → fill → position).
-5. Scale risk only after live fills match paper expectations (slippage/fees).
+   Run ≥ 4 weeks or ≥ 30 trades; compare realised turnover/fill quality to
+   the backtest's cost assumptions.
+2. Create a Hyperliquid **API wallet (agent)** at https://app.hyperliquid.xyz/API
+   (testnet: https://app.hyperliquid-testnet.xyz/API). The agent key signs
+   orders but **cannot withdraw**. Put in `.env`:
+   `HYPERLIQUID_SECRET_KEY` (agent key) and `HYPERLIQUID_ACCOUNT_ADDRESS`
+   (MAIN wallet address). Smoke-test:
+   ```bash
+   PYTHONPATH=src python scripts/hyperliquid_smoke_test.py
+   ```
+3. Rehearse on **testnet first**: `venue.testnet: true` + `mode: live` +
+   `QUANTBOT_MODE=live`, with testnet faucet funds.
+4. Mainnet: set `venue.testnet: false`, keep `leverage: 1`, the **minimum**
+   `RISK_PER_TRADE` (0.5%) and a reduced position cap. The runner refuses to
+   start live without a discovery validation report (`reports/research/summary.json`).
+5. Watch the first several trades end-to-end (signal → order → fill →
+   position → protective stop visible on-exchange).
+6. Scale risk only after live fills match paper expectations (slippage/fees).
 
 ---
 

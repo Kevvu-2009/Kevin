@@ -22,6 +22,8 @@ class OrderSide(str, Enum):
 class OrderType(str, Enum):
     MARKET = "market"
     LIMIT = "limit"
+    STOP_MARKET = "stop_market"        # protective stop (trigger -> market)
+    TAKE_PROFIT = "take_profit"        # profit target (trigger -> market)
 
 
 class OrderStatus(str, Enum):
@@ -45,6 +47,8 @@ class Order:
     type: OrderType
     qty: float
     limit_price: float | None = None
+    trigger_price: float | None = None   # for STOP_MARKET / TAKE_PROFIT
+    reduce_only: bool = False            # never increase/flip the position
     status: OrderStatus = OrderStatus.NEW
     venue_order_id: str | None = None
     filled_qty: float = 0.0
