@@ -1,0 +1,79 @@
+"""Thin ADB wrapper.  Everything the bot needs from the emulator:
+screenshots, taps, swipes, and the screen size.
+
+The same interface is implemented by fakegame.FakeAdb so the whole
+pipeline can be tested offline.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import time
+
+import cv2
+import numpy as np
+
+from .config import BotConfig
+
+
+class AdbError(RuntimeError):
+    pass
+
+
+class Adb:
+    def __init__(self, cfg: BotConfig):
+        self.cfg = cfg
+        self._base = [cfg.adb_path]
+        if cfg.adb_serial:
+            self._base += ["-s", cfg.adb_serial]
+
+    # -- raw helpers ----------------------------------------------------
+    def _run(self, *args: str, binary: bool = False) -> bytes:
+        proc = subprocess.run(self._base + list(args), capture_output=True,
+                              timeout=30)
+        if proc.returncode != 0:
+            raise AdbError(f"adb {' '.join(args)} failed: "
+                           f"{proc.stderr.decode(errors='replace')[:400]}")
+        return proc.stdout if binary else proc.stdout
+
+    # -- public interface -------------------------------------------------
+    def screencap(self) -> np.ndarray:
+        """Full-screen BGR screenshot."""
+        last_err: Exception | None = None
+        for _ in range(self.cfg.screencap_retries):
+            try:
+                raw = self._run("exec-out", "screencap", "-p", binary=True)
+                img = cv2.imdecode(np.frombuffer(raw, np.uint8),
+                                   cv2.IMREAD_COLOR)
+                if img is None:
+                    # old adb mangles \n -> \r\n on 'shell'; exec-out is
+                    # normally binary-safe, but try the fix as a fallback
+                    raw = raw.replace(b"\r\n", b"\n")
+                    img = cv2.imdecode(np.frombuffer(raw, np.uint8),
+                                       cv2.IMREAD_COLOR)
+                if img is not None:
+                    return img
+                last_err = AdbError("screencap: could not decode PNG")
+            except Exception as e:                      # noqa: BLE001
+                last_err = e
+            time.sleep(0.5)
+        raise AdbError(f"screencap failed: {last_err}")
+
+    def screen_size(self) -> tuple[int, int]:
+        """(width, height) of the screen."""
+        img = self.screencap()
+        return img.shape[1], img.shape[0]
+
+    def tap(self, x: int, y: int) -> None:
+        self._run("shell", "input", "tap", str(int(x)), str(int(y)))
+
+    def swipe(self, x1: int, y1: int, x2: int, y2: int,
+              duration_ms: int | None = None) -> None:
+        d = duration_ms if duration_ms is not None else self.cfg.swipe_duration_ms
+        self._run("shell", "input", "swipe",
+                  str(int(x1)), str(int(y1)), str(int(x2)), str(int(y2)),
+                  str(int(d)))
+
+    def sleep(self, seconds: float) -> None:
+        """Overridable so the fake emulator can skip real waiting."""
+        time.sleep(seconds)
