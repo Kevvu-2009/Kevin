@@ -139,6 +139,18 @@ def test_play_single_screen():
     assert len(fake.arrows) == 0
 
 
+def test_board_like_vs_ad():
+    from arrows_bot.afk import board_like
+    c = cfg()
+    board, _ = make_board(SW, SH, c, seed=12)
+    fake = FakeAdb(board, c, sw=SW, sh=SH)
+    assert board_like(fake.screencap(), c) is True
+    ad = np.full((SH, SW, 3), 255, np.uint8)          # blank interstitial
+    assert board_like(ad, c) is False
+    ad[:] = (30, 30, 200)                             # full-screen ad art
+    assert board_like(ad, c) is False
+
+
 def test_probe_scrollable():
     c = cfg()
     big, _ = make_board(2400, 4000, c, seed=10)

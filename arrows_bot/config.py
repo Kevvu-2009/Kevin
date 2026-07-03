@@ -92,6 +92,17 @@ class BotConfig:
     level_poll_s: float = 2.0
     skip_levels: tuple = ()
 
+    # ---- ad handling -----------------------------------------------------
+    # If the screen is neither the home screen nor a board for this long,
+    # assume an interstitial ad and start the dismissal sequence: BACK
+    # key presses first (never click into an ad), then taps on the usual
+    # X positions in the top corners, and relaunch the game if an ad
+    # click-through kicked us into the Play Store / a browser.
+    game_package: str = ""          # auto-detected at afk start if empty
+    ad_grace_s: float = 12.0        # unknown-screen time before dismissing
+    ad_corner_taps: bool = True     # try corner X taps after BACK fails
+    ad_max_dismiss_s: float = 90.0  # give up (and stop the loop) after this
+
     # ---- debug -----------------------------------------------------------
     debug_dir: str = ""             # save intermediate images here if set
 

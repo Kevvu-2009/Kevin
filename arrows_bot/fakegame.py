@@ -181,3 +181,13 @@ class FakeAdb:
 
     def sleep(self, seconds: float) -> None:      # tests don't wait
         pass
+
+    # ad-handling interface (no ads in the fake)
+    def keyevent(self, code) -> None:
+        pass
+
+    def foreground_package(self) -> str | None:
+        return "com.fake.arrows"
+
+    def launch_app(self, package: str) -> None:
+        pass

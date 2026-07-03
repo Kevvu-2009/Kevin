@@ -60,7 +60,19 @@ def play_single(adb: Adb, cfg: BotConfig) -> bool:
         print("play_single: solver stuck - NOT tapping (check debug overlay)")
         return False
 
-    for a in order:
+    for k, a in enumerate(order):
+        if cfg.verify_taps:
+            # re-capture and confirm ink at the tap point: if an ad or
+            # popup covered the board mid-level, stop instead of tapping
+            # blindly into it
+            live = adb.screencap()[y0:y1, x0:x1]
+            r = max(4, int(round(a.half_width)))
+            if _ink_frac_at(live, a.tap_point[0], a.tap_point[1],
+                            r, cfg) < 0.15:
+                print(f"play_single: tap {k + 1}/{len(order)}: board "
+                      f"changed (ad/popup?) - stopping taps")
+                _save_debug(cfg, "single_interrupted.png", live)
+                return False
         adb.tap(x0 + a.tap_point[0], y0 + a.tap_point[1])
         adb.sleep(cfg.tap_settle_s)
     return True

@@ -121,5 +121,23 @@ to 1900x3840 and swipe ratios 0.95–0.98 with zero heart losses.
   Super Hard stitch is missing its outer rim, shrink the band margins.
 * `read_level` needs pytesseract; without it the skip-list is inactive
   (everything else works).
-* An interstitial ad that covers the screen mid-level will stall the
-  AFK loop until dismissed (the loop just polls; it never taps blindly).
+
+## Ads
+
+The bot never *triggers* ads (it never taps Hint, and every tap is
+verified against a live capture first, so a popup mid-level stops the
+taps instead of clicking into the ad).  Interstitials that appear on
+their own are handled by an **ad watchdog** in the AFK loop: any screen
+that is neither the home screen nor a recognisable board for
+`ad_grace_s` seconds starts a dismissal sequence chosen to never click
+INTO the ad — BACK key presses first, then taps on the standard X spots
+in the two top corners, and if an earlier click-through landed in the
+Play Store or a browser (detected via the foreground package), the game
+is relaunched.  Tune with `game_package` (auto-detected at afk start),
+`ad_grace_s`, `ad_corner_taps`, `ad_max_dismiss_s`.
+
+The *reliable* fix is preventing ads: many of these puzzle games show
+none while offline — try disabling BlueStacks' network / airplane mode
+and see if the game still runs; or set a DNS ad-blocker (Android
+Private DNS → `dns.adguard.com`) in the emulator; or buy the no-ads
+IAP once.  The watchdog is the fallback, not the plan.

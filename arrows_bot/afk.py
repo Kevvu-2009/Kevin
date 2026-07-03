@@ -15,6 +15,7 @@ from .adb import Adb
 from .config import BotConfig
 from .play import play_single, play_superhard
 from .stitch import Navigator
+from .vision import extract_arrows
 
 
 # ---------------------------------------------------------------------------
@@ -57,18 +58,87 @@ def read_level(img_bgr: np.ndarray) -> int | None:
 
 
 # ---------------------------------------------------------------------------
+# ad handling
+# ---------------------------------------------------------------------------
+def board_like(img_bgr: np.ndarray, cfg: BotConfig) -> bool:
+    """Does the capture band contain something that segments like arrows?
+    Used to tell 'level in progress' apart from 'interstitial ad'."""
+    sh, sw = img_bgr.shape[:2]
+    x0, y0, x1, y1 = cfg.band_rect(sw, sh)
+    arrows, _ = extract_arrows(img_bgr[y0:y1, x0:x1], cfg, ref_width=sw)
+    return len(arrows) > 0
+
+
+def dismiss_ad(adb: Adb, cfg: BotConfig) -> bool:
+    """Try to get back to the game from an interstitial ad.  Order of
+    escalation is chosen to never click INTO the ad:
+
+      1. if an earlier click-through kicked us out of the game (Play
+         Store / browser in the foreground), relaunch the game;
+      2. BACK key presses (close most interstitials, click nothing);
+      3. taps on the standard X positions in the two top corners.
+
+    Returns True as soon as the home screen or a board is visible."""
+    print("ad watchdog: unknown screen - trying to dismiss")
+    t0 = time.time()
+    backs = 0
+    while time.time() - t0 < cfg.ad_max_dismiss_s:
+        pkg = adb.foreground_package()
+        if cfg.game_package and pkg and cfg.game_package != pkg:
+            print(f"ad watchdog: foreground is {pkg} - relaunching game")
+            adb.launch_app(cfg.game_package)
+            adb.sleep(5.0)
+        elif backs < 3:
+            adb.keyevent(4)                   # BACK
+            backs += 1
+            adb.sleep(2.5)
+        elif cfg.ad_corner_taps:
+            img = adb.screencap()
+            h, w = img.shape[:2]
+            for fx, fy in ((0.964, 0.036), (0.036, 0.036)):
+                adb.tap(int(w * fx), int(h * fy))
+                adb.sleep(2.0)
+            backs = 0                         # alternate corners and BACK
+        else:
+            adb.sleep(2.5)
+        img = adb.screencap()
+        if find_continue(img, cfg) is not None or board_like(img, cfg):
+            print("ad watchdog: back in the game")
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # the loop
 # ---------------------------------------------------------------------------
 def afk_loop(adb: Adb, cfg: BotConfig) -> None:
     skip = {int(x) for x in cfg.skip_levels}
     print(f"AFK loop started (skip list: {sorted(skip) or 'empty'})")
+    if not cfg.game_package:
+        cfg.game_package = adb.foreground_package() or ""
+        if cfg.game_package:
+            print(f"game package: {cfg.game_package}")
 
+    unknown_since: float | None = None
     while True:
         img = adb.screencap()
         btn = find_continue(img, cfg)
         if btn is None:
-            time.sleep(cfg.level_poll_s)      # in a level / ad / loading
+            # in a level / loading / ad.  A board on screen is fine (the
+            # user may be playing a skip-level); a screen that is neither
+            # home nor board for ad_grace_s is treated as an ad.
+            if board_like(img, cfg):
+                unknown_since = None
+            elif unknown_since is None:
+                unknown_since = time.time()
+            elif time.time() - unknown_since > cfg.ad_grace_s:
+                if not dismiss_ad(adb, cfg):
+                    print("could not get past the ad/popup - stopping")
+                    return
+                unknown_since = None
+            time.sleep(cfg.level_poll_s)
             continue
+        unknown_since = None
 
         level = read_level(img)
         print(f"home screen, level {level if level is not None else '?'}")
@@ -88,6 +158,14 @@ def afk_loop(adb: Adb, cfg: BotConfig) -> None:
         else:
             ok = play_single(adb, cfg)
         if not ok:
+            img = adb.screencap()
+            if find_continue(img, cfg) is None and not board_like(img, cfg):
+                # play was interrupted by something that is neither the
+                # board nor the home screen: almost certainly an ad/popup.
+                # Dismiss it and re-enter the loop (the level restarts
+                # from its current state).
+                if dismiss_ad(adb, cfg):
+                    continue
             print("could not fully solve this board - stopping the loop so "
                   "no hearts are risked. Check the debug images.")
             return
@@ -99,11 +177,22 @@ def afk_loop(adb: Adb, cfg: BotConfig) -> None:
 
 
 def _wait_for_home(adb: Adb, cfg: BotConfig) -> bool:
+    """Wait for the Continue button; a post-level interstitial that covers
+    the win screen is dismissed on the way."""
     t0 = time.time()
-    while time.time() - t0 < cfg.win_timeout_s:
+    unknown_since: float | None = None
+    while time.time() - t0 < cfg.win_timeout_s + cfg.ad_max_dismiss_s:
         img = adb.screencap()
         if find_continue(img, cfg) is not None:
             return True
+        if board_like(img, cfg):
+            unknown_since = None              # fly-off animation / loading
+        elif unknown_since is None:
+            unknown_since = time.time()
+        elif time.time() - unknown_since > cfg.ad_grace_s:
+            if not dismiss_ad(adb, cfg):
+                return False
+            unknown_since = None
         time.sleep(cfg.level_poll_s)
     return False
 

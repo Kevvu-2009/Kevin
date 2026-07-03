@@ -74,6 +74,31 @@ class Adb:
                   str(int(x1)), str(int(y1)), str(int(x2)), str(int(y2)),
                   str(int(d)))
 
+    def keyevent(self, code: int | str) -> None:
+        """e.g. keyevent(4) = BACK - closes most interstitial ads safely."""
+        self._run("shell", "input", "keyevent", str(code))
+
+    def foreground_package(self) -> str | None:
+        """Package name of the app in the foreground (None if unknown).
+        Used to notice when an ad click-through kicked us into the Play
+        Store or a browser."""
+        try:
+            out = self._run("shell", "dumpsys", "activity",
+                            "activities").decode(errors="replace")
+        except AdbError:
+            return None
+        for key in ("topResumedActivity", "mResumedActivity",
+                    "mFocusedActivity"):
+            for line in out.splitlines():
+                if key in line and "/" in line:
+                    frag = line.split("/")[0]
+                    return frag.rsplit(" ", 1)[-1].strip("{ ")
+        return None
+
+    def launch_app(self, package: str) -> None:
+        self._run("shell", "monkey", "-p", package,
+                  "-c", "android.intent.category.LAUNCHER", "1")
+
     def sleep(self, seconds: float) -> None:
         """Overridable so the fake emulator can skip real waiting."""
         time.sleep(seconds)
