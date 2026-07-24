@@ -187,12 +187,19 @@ class Navigator:
         self.ratio = cfg.swipe_ratio
         self.pos = np.zeros(2, dtype=np.float64)
         self.last = img[y0:y1, x0:x1].copy()
+        self.fresh = True
 
     # -- capture ----------------------------------------------------------
     def capture(self) -> np.ndarray:
         x0, y0, x1, y1 = self.band
         self.last = self.adb.screencap()[y0:y1, x0:x1].copy()
+        self.fresh = True          # `last` matches what's on screen now
         return self.last
+
+    def capture_if_stale(self) -> np.ndarray:
+        """Screenshots are among the slowest operations, so reuse `last`
+        when nothing has moved the viewport since it was taken."""
+        return self.last if self.fresh else self.capture()
 
     # -- geometry helpers ---------------------------------------------------
     @property
@@ -241,6 +248,7 @@ class Navigator:
             scale = self.min_swipe / length
             fx, fy = fx * scale, fy * scale
         self.adb.swipe(cx + fx / 2, cy + fy / 2, cx - fx / 2, cy - fy / 2)
+        self.fresh = False                       # viewport moved
         self.adb.sleep(self.cfg.swipe_settle_s)
 
     def scroll(self, dx: float, dy: float) -> ScrollInfo:

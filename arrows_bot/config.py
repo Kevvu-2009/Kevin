@@ -42,13 +42,16 @@ class BotConfig:
     corridor_width_factor: float = 1.2
 
     # ---- swipes / scrolling -------------------------------------------
-    swipe_duration_ms: int = 1400   # slow drag => clearly a scroll, not a
-                                    # tap, and no fling in BlueStacks
+    swipe_duration_ms: int = 800    # deliberate drag: no fling, and (with
+                                    # min_swipe_frac) never read as a tap.
+                                    # Tap-vs-scroll is decided by DISTANCE,
+                                    # so this can stay brisk; raise it if
+                                    # BlueStacks ever flings/overshoots.
     min_swipe_frac: float = 0.05    # shortest finger travel = frac * band
                                     # width; below OS touch-slop a swipe is
                                     # read as a TAP (flies an arrow, -1 heart)
     swipe_margin_frac: float = 0.06 # keep swipe endpoints inside the band
-    swipe_settle_s: float = 0.40    # wait after a swipe before screencap
+    swipe_settle_s: float = 0.25    # wait after a swipe before screencap
     scroll_step_frac: float = 0.60  # scroll step = frac * band dimension
     swipe_ratio: float = 1.0        # measured content-px per swipe-px
                                     # (auto-calibrated at runtime)
@@ -86,7 +89,7 @@ class BotConfig:
                                     # overshoot can't clip board content
 
     # ---- play ----------------------------------------------------------
-    tap_settle_s: float = 0.65      # wait for the fly-off animation
+    tap_settle_s: float = 0.45      # wait for the fly-off animation
     verify_taps: bool = True        # confirm ink at tap point before tapping
     verify_gone: bool = True        # confirm arrow left after tapping
     tap_retries: int = 1

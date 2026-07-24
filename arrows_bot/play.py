@@ -153,9 +153,14 @@ def play_superhard(adb: Adb, cfg: BotConfig,
             _save_debug(cfg, "board_stuck.png",
                         draw_overlay(canvas, [by_id[i] for i in remaining], None))
             return False
-        if last is not None:                    # nearest-first keeps scroll short
-            free.sort(key=lambda a: (a.head[0] - last[0]) ** 2
-                                   + (a.head[1] - last[1]) ** 2)
+        # Clear everything reachable without scrolling first, then take the
+        # nearest of the rest: scrolling dominates the runtime, so this cuts
+        # it to roughly one scroll per screenful instead of one per arrow.
+        ref_xy = last if last is not None else (nav.pos[0] + nav.bw / 2,
+                                                nav.pos[1] + nav.bh / 2)
+        free.sort(key=lambda a: (not _fully_visible(nav, a),
+                                 (a.head[0] - ref_xy[0]) ** 2
+                                 + (a.head[1] - ref_xy[1]) ** 2))
 
         progressed = False
         for a in free:
@@ -167,8 +172,7 @@ def play_superhard(adb: Adb, cfg: BotConfig,
                 last = a.head
                 progressed = True
                 step += 1
-                nav.capture()                   # settle after the fly-off
-                break
+                break                           # _try_tap already re-captured
             if res == "blocked":
                 print(f"play_superhard: arrow at {a.head} ({a.direction}) is "
                       f"free in the model but won't leave in-game - stopping to "
@@ -237,6 +241,15 @@ def _try_tap(nav, adb: Adb, cfg: BotConfig, a: Arrow, w_max: float,
             return "blocked"                    # unmoved & aimed right
         sx, sy = sx2, sy2                        # missed: re-aim, tap once more
     return "blocked"
+
+
+def _fully_visible(nav, a: Arrow, pad: int = 12) -> bool:
+    """Is the target's whole bbox already inside the capture band at the
+    current viewport?  If so, no scroll is needed to tap it."""
+    x, y, w, h = a.bbox
+    sx, sy = x - nav.pos[0], y - nav.pos[1]
+    return (sx >= pad and sy >= pad
+            and sx + w <= nav.bw - pad and sy + h <= nav.bh - pad)
 
 
 def _report_merges(arrows: list[Arrow], cfg: BotConfig, sw: int) -> None:
@@ -342,9 +355,14 @@ def _acquire(nav, ref: np.ndarray, cfg: BotConfig, a: Arrow,
     hx, hy = a.tap_point
     did_reset = False
     for _attempt in range(attempts):
-        nav.scroll_to(1, float(np.clip(hy - nav.bh / 2, 0, h_max)))
-        nav.scroll_to(0, float(np.clip(hx - nav.bw / 2, 0, w_max)))
-        nav.capture()
+        # Only scroll when the arrow isn't already comfortably on screen.
+        # Re-centering every arrow is what made play crawl: each swipe
+        # costs ~2s, and after a tap the next (nearest-first) target is
+        # usually already visible.
+        if not _fully_visible(nav, a):
+            nav.scroll_to(1, float(np.clip(hy - nav.bh / 2, 0, h_max)))
+            nav.scroll_to(0, float(np.clip(hx - nav.bw / 2, 0, w_max)))
+        nav.capture_if_stale()      # reuse the post-tap frame when unmoved
         # confirm pos against the ref canvas.  The supermajority demand
         # (min_frac_valid) is what makes this a real identity check: with
         # pos off by a whole board period, the target's twin still
