@@ -120,6 +120,22 @@ def play_superhard(adb: Adb, cfg: BotConfig,
         sx, sy = got
         r = max(4, int(round(a.half_width)))
 
+        if cfg.debug_dir:                       # show exactly where it aims
+            _save_debug(cfg, f"tap_{k:02d}.png",
+                        _mark(nav.last, sx, sy, k + 1, a.direction))
+
+        # FINAL identity gate: the arrow actually under the finger, in a
+        # fresh segmentation of the live view, must be the target (same
+        # direction).  A mis-aimed lock lands on a neighbour pointing some
+        # other way - refuse rather than fly the wrong arrow off.
+        if cfg.verify_taps and not _aim_hits_target(nav, cfg, a, sx, sy):
+            print(f"tap {k + 1}/{len(order)}: the arrow under the aim point "
+                  f"is not the target ({a.direction}); stopping so it can't "
+                  f"tap the wrong arrow. See tap_{k:02d}.png / board_overlay.png")
+            _save_debug(cfg, f"fail_wrongaim_{k:02d}.png",
+                        _mark(nav.last, sx, sy, k + 1, a.direction))
+            return False
+
         ok = False
         for attempt in range(1 + cfg.tap_retries):
             adb.tap(bx0 + sx, by0 + sy)
@@ -142,6 +158,46 @@ def play_superhard(adb: Adb, cfg: BotConfig,
         _erase(ref, labels, a)
         nav.capture()          # refresh after the fly-off animation
     return True
+
+
+def _mark(band: np.ndarray, sx: int, sy: int, num: int, d: str) -> np.ndarray:
+    """Copy of the live band with a crosshair at the intended tap point."""
+    out = band.copy()
+    cv2.drawMarker(out, (int(sx), int(sy)), (0, 0, 255),
+                   cv2.MARKER_CROSS, 70, 4)
+    cv2.circle(out, (int(sx), int(sy)), 40, (0, 0, 255), 3)
+    cv2.putText(out, f"{num}:{d}", (max(0, int(sx) - 40), max(24, int(sy) - 46)),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 255), 3)
+    return out
+
+
+def _aim_hits_target(nav, cfg: BotConfig, a: Arrow, sx: int, sy: int) -> bool:
+    """Re-segment the live band and confirm the arrow at the aim point is
+    the target: same direction, comparable size.  Catches a lock that
+    slid onto a differently-pointing neighbour (skipping/stopping is free;
+    a wrong tap costs a heart).  It cannot tell identical twins apart -
+    that's the viewport-position confirmation's job, upstream."""
+    live_arrows, live_labels = extract_arrows(nav.last, cfg, ref_width=nav.sw)
+    if not live_arrows:
+        return False
+    h, w = live_labels.shape
+    match = None
+    if 0 <= sy < h and 0 <= sx < w and live_labels[sy, sx]:
+        lab = int(live_labels[sy, sx])
+        match = next((la for la in live_arrows if la.id == lab), None)
+    if match is None:                            # aim just off the ink
+        near = min(live_arrows, key=lambda la: (la.head[0] - sx) ** 2
+                                               + (la.head[1] - sy) ** 2)
+        if (near.head[0] - sx) ** 2 + (near.head[1] - sy) ** 2 > \
+                (2 * max(6, a.half_width)) ** 2:
+            return False
+        match = near
+    if match.direction != a.direction:
+        return False
+    aw, ah = a.bbox[2], a.bbox[3]
+    mw, mh = match.bbox[2], match.bbox[3]        # loose size sanity
+    return (0.5 * aw - 8 <= mw <= 1.8 * aw + 8
+            and 0.5 * ah - 8 <= mh <= 1.8 * ah + 8)
 
 
 def _erase(ref: np.ndarray, labels: np.ndarray, a: Arrow) -> None:
