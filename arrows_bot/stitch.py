@@ -215,13 +215,31 @@ class Navigator:
         dim = self.bw if axis == 0 else self.bh
         return min(dim * self.cfg.scroll_step_frac, self.max_step(axis))
 
+    @property
+    def min_swipe(self) -> float:
+        """Shortest finger travel we will ever send.  A gesture shorter
+        than the OS touch-slop is read as a TAP, not a scroll - which on
+        this game flies an arrow off and costs a heart.  Kept well above
+        slop so every scroll is unambiguously a drag."""
+        return max(40.0, self.cfg.min_swipe_frac * self.bw)
+
     # -- swipes --------------------------------------------------------------
     def _swipe(self, dx: float, dy: float) -> None:
         """One physical swipe intending viewport += (dx, dy).  The finger
-        moves opposite to the viewport: content follows the finger."""
+        moves opposite to the viewport: content follows the finger.
+
+        A too-short drag would register as a tap, so the finger travel is
+        floored at min_swipe (the extra travel is harmless: scroll()
+        MEASURES the real shift afterwards, so over-travel self-corrects)."""
         x0, y0, x1, y1 = self.band
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
         fx, fy = dx / self.ratio, dy / self.ratio
+        length = float(np.hypot(fx, fy))
+        if length == 0.0:
+            return                               # nothing to do - never tap
+        if length < self.min_swipe:
+            scale = self.min_swipe / length
+            fx, fy = fx * scale, fy * scale
         self.adb.swipe(cx + fx / 2, cy + fy / 2, cx - fx / 2, cy - fy / 2)
         self.adb.sleep(self.cfg.swipe_settle_s)
 
@@ -347,7 +365,13 @@ class Navigator:
 
     def scroll_to(self, axis: int, target: float, tol: float = 3.0) -> None:
         """Multi-swipe scroll along one axis until pos[axis] ~= target.
-        Stops gracefully if a physical edge is hit first."""
+        Stops gracefully if a physical edge is hit first.
+
+        The tolerance is floored at one min_swipe: a residual smaller than
+        the shortest safe drag can't be closed without sending a tap-like
+        micro-swipe, and it doesn't need to be - localization (tapping) and
+        paste-time registration (stitching) both absorb that little slack."""
+        tol = max(tol, self.min_swipe)
         stalls = 0
         for _ in range(self.cfg.max_scroll_steps):
             delta = target - self.pos[axis]

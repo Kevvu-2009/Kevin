@@ -122,6 +122,7 @@ class FakeAdb:
         self.sw, self.sh = sw, sh
         self.ratio = ratio
         self.jitter = jitter
+        self.tap_slop = 20.0            # OS tap-vs-scroll threshold (px)
         self.rng = np.random.default_rng(seed)
         self.vx = (board.shape[1] - sw) / 2.0
         self.vy = (board.shape[0] - sh) / 2.0
@@ -152,6 +153,13 @@ class FakeAdb:
         return self.sw, self.sh
 
     def swipe(self, x1, y1, x2, y2, duration_ms=None) -> None:
+        # Model the real hazard: a finger travel shorter than the OS touch
+        # slop is NOT a scroll - the game reads it as a TAP at that point
+        # (and flies an arrow off / costs a heart).  This is exactly the
+        # accidental-tap bug the min_swipe floor exists to prevent.
+        if ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5 < self.tap_slop:
+            self.tap((x1 + x2) / 2 - self.vx, (y1 + y2) / 2 - self.vy)
+            return
         dx = (x1 - x2) * self.ratio + self.rng.normal(0, self.jitter)
         dy = (y1 - y2) * self.ratio + self.rng.normal(0, self.jitter)
         self.vx = float(np.clip(self.vx + dx, 0, self.board.shape[1] - self.sw))

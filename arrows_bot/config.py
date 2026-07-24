@@ -42,7 +42,11 @@ class BotConfig:
     corridor_width_factor: float = 1.2
 
     # ---- swipes / scrolling -------------------------------------------
-    swipe_duration_ms: int = 900    # long duration => no fling in BlueStacks
+    swipe_duration_ms: int = 1400   # slow drag => clearly a scroll, not a
+                                    # tap, and no fling in BlueStacks
+    min_swipe_frac: float = 0.05    # shortest finger travel = frac * band
+                                    # width; below OS touch-slop a swipe is
+                                    # read as a TAP (flies an arrow, -1 heart)
     swipe_margin_frac: float = 0.06 # keep swipe endpoints inside the band
     swipe_settle_s: float = 0.40    # wait after a swipe before screencap
     scroll_step_frac: float = 0.60  # scroll step = frac * band dimension

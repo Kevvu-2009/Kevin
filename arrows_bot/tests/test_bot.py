@@ -139,6 +139,45 @@ def test_play_single_screen():
     assert len(fake.arrows) == 0
 
 
+def test_scrolling_never_taps():
+    """A capture-only pass (no intended taps) must not lose a single heart.
+    The fake reads any sub-slop finger travel as a tap, so this fails if
+    the min_swipe floor regresses and micro-swipes slip through."""
+    c = cfg()
+    board, _ = make_board(2400, 4000, c, seed=5)
+    fake = FakeAdb(board, c, sw=SW, sh=SH, ratio=0.965, jitter=1.0, seed=6)
+    nav = Navigator(fake, c)
+    capture_board(nav, c)
+    assert fake.hearts == 3, "scrolling flew arrows off (swipe read as tap)"
+    assert fake.cleared == 0, "capture pass moved arrows - it must not"
+
+
+def test_min_swipe_floor():
+    """Every finger travel _swipe emits - even for a tiny requested move -
+    must clear the OS tap-slop, or the game reads it as a tap.  Fails if
+    the floor regresses (a raw tiny move would be sent through)."""
+    c = cfg()
+    board, _ = make_board(2400, 4000, c, seed=5)
+    fake = FakeAdb(board, c, sw=SW, sh=SH)
+    nav = Navigator(fake, c)
+    assert nav.min_swipe > fake.tap_slop, "min swipe must exceed OS slop"
+
+    sent = []
+    orig = fake.swipe
+    fake.swipe = lambda x1, y1, x2, y2, duration_ms=None: (
+        sent.append(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5),
+        orig(x1, y1, x2, y2, duration_ms))[1]
+    for d in (1.0, 3.0, 10.0, 19.0, 25.0, 100.0, 400.0):
+        nav._swipe(d, 0.0)
+        nav._swipe(0.0, d)
+    assert sent and min(sent) >= fake.tap_slop, \
+        f"a swipe was shorter than OS slop: min={min(sent):.1f}px"
+
+    before = len(sent)
+    nav._swipe(0.0, 0.0)                     # exact zero move -> no gesture
+    assert len(sent) == before
+
+
 def test_board_like_vs_ad():
     from arrows_bot.afk import board_like
     c = cfg()
