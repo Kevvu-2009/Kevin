@@ -7,6 +7,7 @@ pipeline can be tested offline.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 
@@ -28,6 +29,27 @@ class Adb:
             self._base += ["-s", cfg.adb_serial]
 
     # -- raw helpers ----------------------------------------------------
+    def _tcp_serial(self) -> str | None:
+        """The device serial if it's a TCP endpoint (host:port) - the kind
+        that can be re-established with `adb connect`.  Falls back to
+        $ANDROID_SERIAL so the env-var workflow self-heals too."""
+        serial = self.cfg.adb_serial or os.environ.get("ANDROID_SERIAL", "")
+        return serial if ":" in serial else None
+
+    def reconnect(self) -> bool:
+        """Best-effort `adb connect <host:port>`.  Idempotent - a no-op if
+        already connected.  Returns False for non-TCP serials (e.g.
+        emulator-5554, which adb re-detects on its own)."""
+        serial = self._tcp_serial()
+        if not serial:
+            return False
+        try:
+            subprocess.run([self.cfg.adb_path, "connect", serial],
+                           capture_output=True, timeout=15)
+            return True
+        except Exception:                               # noqa: BLE001
+            return False
+
     def _run(self, *args: str, binary: bool = False) -> bytes:
         proc = subprocess.run(self._base + list(args), capture_output=True,
                               timeout=30)
@@ -38,9 +60,11 @@ class Adb:
 
     # -- public interface -------------------------------------------------
     def screencap(self) -> np.ndarray:
-        """Full-screen BGR screenshot."""
+        """Full-screen BGR screenshot.  BlueStacks' TCP ADB link drops
+        periodically, so a failed capture triggers one reconnect attempt
+        before the next retry (harmless for emulator-* serials)."""
         last_err: Exception | None = None
-        for _ in range(self.cfg.screencap_retries):
+        for _attempt in range(self.cfg.screencap_retries):
             try:
                 raw = self._run("exec-out", "screencap", "-p", binary=True)
                 img = cv2.imdecode(np.frombuffer(raw, np.uint8),
@@ -56,8 +80,13 @@ class Adb:
                 last_err = AdbError("screencap: could not decode PNG")
             except Exception as e:                      # noqa: BLE001
                 last_err = e
+                self.reconnect()                        # link may have dropped
             time.sleep(0.5)
-        raise AdbError(f"screencap failed: {last_err}")
+        hint = ""
+        if self._tcp_serial():
+            hint = (f"  (tried reconnecting to {self._tcp_serial()}; is "
+                    f"BlueStacks running with ADB enabled?)")
+        raise AdbError(f"screencap failed: {last_err}{hint}")
 
     def screen_size(self) -> tuple[int, int]:
         """(width, height) of the screen."""

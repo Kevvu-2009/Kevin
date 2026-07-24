@@ -71,6 +71,7 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
     cfg = build_cfg(args)
     adb = Adb(cfg)
+    adb.reconnect()          # re-establish a dropped BlueStacks TCP link
 
     if args.cmd == "probe":
         w, h = adb.screen_size()
