@@ -26,33 +26,45 @@ from .vision import draw_overlay, extract_arrows
 
 
 def build_cfg(args) -> BotConfig:
-    cfg = BotConfig.load(args.config) if args.config else BotConfig()
-    if args.adb:
+    cfg = (BotConfig.load(args.config) if getattr(args, "config", None)
+           else BotConfig())
+    if getattr(args, "adb", None):
         cfg.adb_path = args.adb
-    if args.serial:
+    if getattr(args, "serial", None):
         cfg.adb_serial = args.serial
-    if args.debug:
+    if getattr(args, "debug", None):
         cfg.debug_dir = args.debug
     return cfg
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(prog="arrows_bot", description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--config", help="JSON config file (see BotConfig)")
-    p.add_argument("--adb", help="path to adb.exe")
-    p.add_argument("--serial", help="adb device serial")
-    p.add_argument("--debug", help="directory for debug images")
+    # Global flags live on a parent parser added to every subparser too,
+    # so they work in EITHER position (`--serial X probe` and
+    # `probe --serial X` both parse).  SUPPRESS defaults stop the
+    # subparser copy from clobbering a value the main parser already set.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--config", default=argparse.SUPPRESS,
+                        help="JSON config file (see BotConfig)")
+    common.add_argument("--adb", default=argparse.SUPPRESS,
+                        help="path to adb.exe")
+    common.add_argument("--serial", default=argparse.SUPPRESS,
+                        help="adb device serial (or set $env:ANDROID_SERIAL)")
+    common.add_argument("--debug", default=argparse.SUPPRESS,
+                        help="directory for debug images")
+
+    p = argparse.ArgumentParser(
+        prog="arrows_bot", description=__doc__, parents=[common],
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("probe")
-    sp = sub.add_parser("solve")
+    sub.add_parser("probe", parents=[common])
+    sp = sub.add_parser("solve", parents=[common])
     sp.add_argument("--dry-run", action="store_true",
                     help="detect + solve + save overlay, but don't tap")
-    st = sub.add_parser("stitch")
+    st = sub.add_parser("stitch", parents=[common])
     st.add_argument("-o", "--out", default="board.png")
-    sub.add_parser("superhard")
-    ak = sub.add_parser("afk")
+    sub.add_parser("superhard", parents=[common])
+    ak = sub.add_parser("afk", parents=[common])
     ak.add_argument("--skip", default="",
                     help="comma-separated level numbers to play yourself")
 
