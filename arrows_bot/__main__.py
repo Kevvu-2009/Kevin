@@ -25,6 +25,41 @@ from .stitch import Navigator, capture_board
 from .vision import draw_overlay, extract_arrows
 
 
+def _report_board(board_bgr, cfg: BotConfig, overlay_name: str,
+                  ref_width: int):
+    """Segment + solve a board image, save the overlay (STUCK arrows boxed
+    in magenta), dump the ink mask when --debug is set, and print a
+    diagnosis.  Returns the solve order (None if stuck)."""
+    from pathlib import Path
+
+    from .solver import stuck_set
+    from .vision import ink_mask
+
+    arrows, labels = extract_arrows(board_bgr, cfg, ref_width=ref_width)
+    order = solve(arrows, labels, cfg)
+    stuck = [] if order else stuck_set(arrows, labels, cfg)
+    overlay = draw_overlay(board_bgr, arrows, order,
+                           highlight={a.id for a in stuck})
+    cv2.imwrite(overlay_name, overlay)
+    if cfg.debug_dir:
+        d = Path(cfg.debug_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(d / "ink_mask.png"), ink_mask(board_bgr, cfg))
+
+    if order:
+        print(f"{len(arrows)} arrows, solver: OK -> {overlay_name}")
+    else:
+        pts = ", ".join(f"({a.head[0]},{a.head[1]}) {a.direction}"
+                        for a in stuck[:8])
+        print(f"{len(arrows)} arrows, solver: STUCK on {len(stuck)} of them "
+              f"-> see the MAGENTA boxes in {overlay_name}\n"
+              f"  first stuck heads: {pts}"
+              + ("" if not cfg.debug_dir else
+                 "\n  ink_mask.png dumped - check the red arrows show up "
+                 "white in it"))
+    return order
+
+
 def build_cfg(args) -> BotConfig:
     cfg = (BotConfig.load(args.config) if getattr(args, "config", None)
            else BotConfig())
@@ -86,27 +121,18 @@ def main(argv=None) -> int:
             img = adb.screencap()
             x0, y0, x1, y1 = cfg.band_rect(img.shape[1], img.shape[0])
             band = img[y0:y1, x0:x1]
+            _report_board(band, cfg, "solve_overlay.png", img.shape[1])
             arrows, labels = extract_arrows(band, cfg, ref_width=img.shape[1])
-            order = solve(arrows, labels, cfg)
-            cv2.imwrite("solve_overlay.png", draw_overlay(band, arrows, order))
-            print(f"{len(arrows)} arrows, "
-                  f"{'solved - order in' if order else 'STUCK - see'} "
-                  f"solve_overlay.png")
-            return 0 if order else 1
+            return 0 if solve(arrows, labels, cfg) else 1
         return 0 if play_single(adb, cfg) else 1
 
     if args.cmd == "stitch":
         nav = Navigator(adb, cfg)
         res = capture_board(nav, cfg, cfg.debug_dir or None)
         cv2.imwrite(args.out, res.canvas)
-        arrows, labels = extract_arrows(res.canvas, cfg, ref_width=nav.sw)
-        order = solve(arrows, labels, cfg)
-        cv2.imwrite("board_overlay.png",
-                    draw_overlay(res.canvas, arrows, order))
         print(f"stitched {res.canvas.shape[1]}x{res.canvas.shape[0]} "
-              f"(extent {res.extent[0]:.0f},{res.extent[1]:.0f}) -> {args.out}\n"
-              f"{len(arrows)} arrows, solver: "
-              f"{'OK' if order else 'STUCK'} -> board_overlay.png")
+              f"(extent {res.extent[0]:.0f},{res.extent[1]:.0f}) -> {args.out}")
+        order = _report_board(res.canvas, cfg, "board_overlay.png", nav.sw)
         return 0 if order else 1
 
     if args.cmd == "superhard":

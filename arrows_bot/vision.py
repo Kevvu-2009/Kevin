@@ -29,9 +29,20 @@ OPPOSITE = {"U": "D", "D": "U", "L": "R", "R": "L"}
 
 
 def ink_mask(img_bgr: np.ndarray, cfg: BotConfig) -> np.ndarray:
-    """uint8 {0,255} mask of arrow ink (dark pixels on white)."""
+    """uint8 {0,255} mask of arrow ink on the white board.
+
+    Catches BOTH the dark-navy arrows (low brightness) and colored arrows
+    such as the red/orange ones on Super Hard boards (high saturation) -
+    i.e. anything that is clearly not the near-white background or the
+    faint gray grid dots.  ink_sat_thresh gates the colored branch; set it
+    to 255 to fall back to navy-only detection.
+    """
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    return ((gray < cfg.ink_gray_thresh) * 255).astype(np.uint8)
+    mx = img_bgr.max(axis=2).astype(np.int16)
+    mn = img_bgr.min(axis=2).astype(np.int16)
+    sat = mx - mn                                   # 0 for gray/white/black
+    mask = (gray < cfg.ink_gray_thresh) | (sat > cfg.ink_sat_thresh)
+    return (mask * np.uint8(255)).astype(np.uint8)
 
 
 @dataclass
@@ -109,12 +120,21 @@ def extract_arrows(img_bgr: np.ndarray, cfg: BotConfig,
 
 
 def draw_overlay(img_bgr: np.ndarray, arrows: list[Arrow],
-                 order: list[Arrow] | None = None) -> np.ndarray:
-    """Debug overlay: heads, directions, and (optionally) the tap order."""
+                 order: list[Arrow] | None = None,
+                 highlight: set[int] | None = None) -> np.ndarray:
+    """Debug overlay: heads, directions, and (optionally) the tap order.
+
+    Arrows whose id is in `highlight` (e.g. the STUCK set) get a thick
+    magenta box so the culprits are obvious at a glance on a big board.
+    """
     out = img_bgr.copy()
     rank = {a.id: k for k, a in enumerate(order)} if order else {}
+    hl = highlight or set()
     for a in arrows:
         x, y, w, h = a.bbox
+        if a.id in hl:
+            cv2.rectangle(out, (x - 3, y - 3), (x + w + 3, y + h + 3),
+                          (255, 0, 255), 6)
         cv2.rectangle(out, (x, y), (x + w, y + h), (0, 200, 0), 2)
         hx, hy = a.head
         dx, dy = DIRS[a.direction]

@@ -19,7 +19,9 @@ class BotConfig:
     screencap_retries: int = 3
 
     # ---- ink / segmentation ------------------------------------------
-    ink_gray_thresh: int = 140      # gray < thresh  ->  arrow ink
+    ink_gray_thresh: int = 140      # gray < thresh  ->  dark (navy) ink
+    ink_sat_thresh: int = 70        # max-min channel > this -> colored ink
+                                    # (red/orange arrows); 255 = navy only
     min_area_frac: float = 2.0e-4   # min component area = frac * sw**2
     max_area_frac: float = 0.5      # reject blobs bigger than this * sw**2
 

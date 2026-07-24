@@ -48,6 +48,26 @@ def remove_arrow(a: Arrow, labels: np.ndarray) -> None:
     sub[sub == a.id] = 0
 
 
+def stuck_set(arrows: list[Arrow], labels: np.ndarray,
+              cfg: BotConfig) -> list[Arrow]:
+    """Greedy-peel every arrow that can escape; return whatever is left
+    when no move remains ([] means fully solvable).  Because removing an
+    arrow never blocks another, the leftover set is well-defined and is
+    exactly the group jamming the board - the arrows to eyeball first when
+    a solve comes back STUCK (usually a wrong direction or a colored arrow
+    the detector missed sitting in a corridor)."""
+    work = labels.copy()
+    remaining = list(arrows)
+    while remaining:
+        free = [a for a in remaining if can_escape(a, work, cfg)]
+        if not free:
+            return remaining
+        for a in free:
+            remove_arrow(a, work)
+            remaining.remove(a)
+    return []
+
+
 def solve(arrows: list[Arrow], labels: np.ndarray,
           cfg: BotConfig) -> list[Arrow] | None:
     """Return a full tap order, or None if the board can't be fully solved
