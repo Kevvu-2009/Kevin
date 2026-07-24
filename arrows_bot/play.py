@@ -18,7 +18,7 @@ from .adb import Adb
 from .config import BotConfig
 from .solver import can_escape, remove_arrow, solve, stuck_set
 from .stitch import Navigator, capture_board, register
-from .vision import Arrow, draw_overlay, extract_arrows
+from .vision import Arrow, draw_overlay, extract_arrows, ink_mask
 
 
 def _ink_frac_at(img_bgr: np.ndarray, x: int, y: int, r: int,
@@ -130,6 +130,9 @@ def play_superhard(adb: Adb, cfg: BotConfig,
                   f"the solve. Re-run; if it repeats, the board edge wasn't "
                   f"found (a blank strip at an edge can stop the search "
                   f"early).")
+        _report_merges(arrows, cfg, nav.sw)
+        if cfg.debug_dir:
+            _save_debug(cfg, "ink_mask.png", ink_mask(canvas, cfg))
         return False
 
     ref = canvas.copy()          # image model; whitened as arrows leave
@@ -234,6 +237,31 @@ def _try_tap(nav, adb: Adb, cfg: BotConfig, a: Arrow, w_max: float,
             return "blocked"                    # unmoved & aimed right
         sx, sy = sx2, sy2                        # missed: re-aim, tap once more
     return "blocked"
+
+
+def _report_merges(arrows: list[Arrow], cfg: BotConfig, sw: int) -> None:
+    """Warn when components look like MERGED arrows.
+
+    Segmentation relies on the thin white gap between arrows.  Lower the
+    emulator resolution far enough and that gap blurs away, so two or more
+    arrows join into one component - which then gets a nonsense head and
+    direction, and jams the solve.  A merged blob is far larger than a
+    typical arrow, so a heavy upper tail in the area distribution is the
+    tell."""
+    if len(arrows) < 8:
+        return
+    areas = sorted(a.area for a in arrows)
+    med = areas[len(areas) // 2]
+    big = [a for a in arrows if a.area > 4 * med]
+    stroke = min(a.half_width for a in arrows) * 2
+    if big:
+        print(f"  POSSIBLE MERGED ARROWS: {len(big)} components are >4x the "
+              f"median size ({med} px) - at this resolution the white gaps "
+              f"between arrows may be too thin to separate them.")
+    if stroke < 10:
+        print(f"  Arrow strokes are only ~{stroke:.0f}px wide. If the board "
+              f"won't solve, RAISE the emulator resolution (BlueStacks "
+              f"Settings > Display) - bigger arrows means clearer gaps.")
 
 
 def _clipped_arrows(arrows: list[Arrow], shape, tol: int = 2) -> list[Arrow]:
