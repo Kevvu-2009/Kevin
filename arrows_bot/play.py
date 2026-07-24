@@ -16,7 +16,7 @@ import numpy as np
 
 from .adb import Adb
 from .config import BotConfig
-from .solver import solve
+from .solver import can_escape, remove_arrow, solve
 from .stitch import Navigator, capture_board, register
 from .vision import Arrow, draw_overlay, extract_arrows
 
@@ -83,8 +83,18 @@ def play_single(adb: Adb, cfg: BotConfig) -> bool:
 # ---------------------------------------------------------------------------
 def play_superhard(adb: Adb, cfg: BotConfig,
                    nav: Navigator | None = None) -> bool:
-    """Stitch the scrolling board, solve it, then scroll-to-tap each arrow
-    in solve order.  Returns True when the whole order was executed."""
+    """Stitch the scrolling board, then clear it by RE-DECIDING every step
+    from the true remaining board - only ever tapping an arrow the current,
+    accurate model says can escape right now.  Returns True iff every arrow
+    was confirmed gone.
+
+    Why not just follow the one-shot solve order: if an arrow can't be
+    localized (a "phantom" skip), the rest of that order is invalid - it
+    assumed the skip was cleared, so a later arrow that needed it gone gets
+    tapped while still blocked, and a blocked tap costs a heart.  So the
+    model here loses an arrow ONLY when that arrow is confirmed gone; a
+    skip is deferred, never pretended-cleared.
+    """
     nav = nav or Navigator(adb, cfg)
     result = capture_board(nav, cfg, cfg.debug_dir or None)
     canvas = result.canvas
@@ -102,62 +112,108 @@ def play_superhard(adb: Adb, cfg: BotConfig,
               "(see board_overlay.png)")
         return False
 
-    # ref = live board model; every tapped arrow is erased from it so
-    # localization stays in sync with the real screen
-    ref = canvas.copy()
-    bx0, by0, _, _ = nav.band
+    ref = canvas.copy()          # image model; whitened as arrows leave
+    work = labels.copy()         # label model; an id -> 0 only when CONFIRMED gone
+    by_id = {a.id: a for a in arrows}
+    remaining = set(by_id)
+    last: tuple[int, int] | None = None
+    step = 0
+    stalls = 0
 
-    for k, a in enumerate(order):
-        got = _acquire(nav, ref, cfg, a, w_max, h_max)
-        if got is None:
-            # phantom from a bad stitch (or the arrow already flew off):
-            # skipping costs nothing - keep the model honest and move on
-            print(f"tap {k + 1}/{len(order)}: arrow not found on screen, "
-                  f"skipping (phantom?)")
-            _save_debug(cfg, f"skip_phantom_{k}.png", nav.last)
-            _erase(ref, labels, a)
-            continue
-        sx, sy = got
-        r = max(4, int(round(a.half_width)))
-
-        if cfg.debug_dir:                       # show exactly where it aims
-            _save_debug(cfg, f"tap_{k:02d}.png",
-                        _mark(nav.last, sx, sy, k + 1, a.direction))
-
-        # FINAL identity gate: the arrow actually under the finger, in a
-        # fresh segmentation of the live view, must be the target (same
-        # direction).  A mis-aimed lock lands on a neighbour pointing some
-        # other way - refuse rather than fly the wrong arrow off.
-        if cfg.verify_taps and not _aim_hits_target(nav, cfg, a, sx, sy):
-            print(f"tap {k + 1}/{len(order)}: the arrow under the aim point "
-                  f"is not the target ({a.direction}); stopping so it can't "
-                  f"tap the wrong arrow. See tap_{k:02d}.png / board_overlay.png")
-            _save_debug(cfg, f"fail_wrongaim_{k:02d}.png",
-                        _mark(nav.last, sx, sy, k + 1, a.direction))
+    while remaining:
+        free = [by_id[i] for i in remaining if can_escape(by_id[i], work, cfg)]
+        if not free:
+            # accurate model, yet nothing can escape: a direction is wrong
+            # or the board really is unsolvable - never happens on good data
+            print(f"play_superhard: {len(remaining)} arrows left but none can "
+                  f"escape in the model - stopping (bad direction?).")
+            _save_debug(cfg, "board_stuck.png",
+                        draw_overlay(canvas, [by_id[i] for i in remaining], None))
             return False
+        if last is not None:                    # nearest-first keeps scroll short
+            free.sort(key=lambda a: (a.head[0] - last[0]) ** 2
+                                   + (a.head[1] - last[1]) ** 2)
 
-        ok = False
-        for attempt in range(1 + cfg.tap_retries):
-            adb.tap(bx0 + sx, by0 + sy)
-            adb.sleep(cfg.tap_settle_s)
-            if not cfg.verify_gone:
-                ok = True
+        progressed = False
+        for a in free:
+            res = _try_tap(nav, adb, cfg, a, w_max, h_max, ref, step)
+            if res == "ok":
+                _erase(ref, labels, a)          # whiten image (orig labels)
+                remove_arrow(a, work)           # remove from live model
+                remaining.discard(a.id)
+                last = a.head
+                progressed = True
+                step += 1
+                nav.capture()                   # settle after the fly-off
                 break
-            live = nav.capture()
-            if _ink_frac_at(live, sx, sy, r, cfg) < 0.15:
-                ok = True
-                break
-            print(f"tap {k + 1}/{len(order)}: arrow still there "
-                  f"(attempt {attempt + 1})")
-        if not ok:
-            print(f"tap {k + 1}/{len(order)}: arrow did not leave - board "
-                  f"model is wrong, stopping to protect hearts")
-            _save_debug(cfg, f"fail_stuck_{k}.png", nav.last)
-            return False
+            if res == "blocked":
+                print(f"play_superhard: arrow at {a.head} ({a.direction}) is "
+                      f"free in the model but won't leave in-game - stopping to "
+                      f"protect hearts (a special/red arrow?). "
+                      f"See blocked_{step:03d}.png")
+                return False
+            # "skip": couldn't confirm this one now - try the next free arrow
 
-        _erase(ref, labels, a)
-        nav.capture()          # refresh after the fly-off animation
+        if not progressed:
+            stalls += 1
+            print(f"play_superhard: couldn't localize any of {len(free)} "
+                  f"currently-free arrows ({len(remaining)} remain, "
+                  f"try {stalls}).")
+            if stalls >= 2:
+                print("play_superhard: no progress - stopping. Re-run to "
+                      "re-stitch, or check the debug images.")
+                _save_debug(cfg, "board_noprogress.png",
+                            draw_overlay(canvas, [by_id[i] for i in remaining],
+                                         None))
+                return False
+        else:
+            stalls = 0
+
+    print("play_superhard: board cleared!")
     return True
+
+
+def _try_tap(nav, adb: Adb, cfg: BotConfig, a: Arrow, w_max: float,
+             h_max: float, ref: np.ndarray, step: int) -> str:
+    """Localize, aim-gate, tap, and verify one free arrow.  Returns:
+        "ok"      - the arrow is confirmed gone
+        "skip"    - couldn't confidently localize/aim (defer, costs nothing)
+        "blocked" - aimed correctly but the arrow won't leave (protect hearts)
+
+    Miss vs block: after a tap that leaves the arrow present, re-localize.
+    If the arrow's head moved, the tap MISSED (empty space, no heart) - re-aim
+    and try once more.  If it's exactly where we tapped, it's genuinely
+    blocked - report without a second heart-costing tap."""
+    bx0, by0, _, _ = nav.band
+    got = _acquire(nav, ref, cfg, a, w_max, h_max)
+    if got is None:
+        _save_debug(cfg, f"skip_{step:03d}.png", nav.last)
+        return "skip"
+    sx, sy = got
+    if cfg.debug_dir:
+        _save_debug(cfg, f"tap_{step:03d}.png", _mark(nav.last, sx, sy,
+                                                      step + 1, a.direction))
+    if cfg.verify_taps and not _aim_hits_target(nav, cfg, a, sx, sy):
+        return "skip"                           # not confidently the target
+    r = max(4, int(round(a.half_width)))
+
+    for _attempt in range(2):
+        adb.tap(bx0 + sx, by0 + sy)
+        adb.sleep(cfg.tap_settle_s)
+        if not cfg.verify_gone:
+            return "ok"
+        if _ink_frac_at(nav.capture(), sx, sy, r, cfg) < 0.15:
+            return "ok"
+        got2 = _acquire(nav, ref, cfg, a, w_max, h_max)   # miss or block?
+        if got2 is None:
+            return "skip"
+        sx2, sy2 = got2
+        if (sx2 - sx) ** 2 + (sy2 - sy) ** 2 <= (1.5 * r) ** 2:
+            _save_debug(cfg, f"blocked_{step:03d}.png",
+                        _mark(nav.last, sx2, sy2, step + 1, a.direction))
+            return "blocked"                    # unmoved & aimed right
+        sx, sy = sx2, sy2                        # missed: re-aim, tap once more
+    return "blocked"
 
 
 def _mark(band: np.ndarray, sx: int, sy: int, num: int, d: str) -> np.ndarray:

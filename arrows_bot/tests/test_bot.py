@@ -129,6 +129,26 @@ def test_play_superhard_end_to_end():
     assert fake.cleared == len(truth)
 
 
+def test_skips_never_lose_hearts(monkeypatch):
+    """Inject random localization skips (phantoms).  A skip must be deferred,
+    never treated as 'cleared' - so the model stays honest and the bot never
+    taps a still-blocked arrow.  With the old order-following code a skip
+    desynced the model and cost a heart; here hearts must stay full."""
+    import random
+
+    import arrows_bot.play as play
+    c = cfg()
+    board, _ = make_board(2400, 4000, c, seed=5)
+    fake = FakeAdb(board, c, sw=SW, sh=SH, ratio=0.965, jitter=1.0, seed=6)
+    nav = Navigator(fake, c)
+    rng = random.Random(0)
+    real = play._acquire
+    monkeypatch.setattr(play, "_acquire", lambda *a, **k:
+                        None if rng.random() < 0.3 else real(*a, **k))
+    play.play_superhard(fake, c, nav=nav)
+    assert fake.hearts == 3, "a skip led to a blocked tap - lost a heart"
+
+
 def test_play_single_screen():
     c = cfg()
     board, truth = make_board(SW, SH, c, seed=9)
