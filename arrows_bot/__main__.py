@@ -49,14 +49,20 @@ def _report_board(board_bgr, cfg: BotConfig, overlay_name: str,
     if order:
         print(f"{len(arrows)} arrows, solver: OK -> {overlay_name}")
     else:
+        from .play import _clipped_arrows
         pts = ", ".join(f"({a.head[0]},{a.head[1]}) {a.direction}"
                         for a in stuck[:8])
+        clipped = _clipped_arrows(arrows, board_bgr.shape)
         print(f"{len(arrows)} arrows, solver: STUCK on {len(stuck)} of them "
               f"-> see the MAGENTA boxes in {overlay_name}\n"
               f"  first stuck heads: {pts}"
               + ("" if not cfg.debug_dir else
                  "\n  ink_mask.png dumped - check the red arrows show up "
                  "white in it"))
+        if clipped:
+            print(f"  WARNING: {len(clipped)} arrows are cut off at the "
+                  f"canvas border -> the stitch is incomplete, and clipped "
+                  f"arrows get a wrong direction, which jams the solve.")
     return order
 
 

@@ -16,7 +16,7 @@ import numpy as np
 
 from .adb import Adb
 from .config import BotConfig
-from .solver import can_escape, remove_arrow, solve
+from .solver import can_escape, remove_arrow, solve, stuck_set
 from .stitch import Navigator, capture_board, register
 from .vision import Arrow, draw_overlay, extract_arrows
 
@@ -100,16 +100,36 @@ def play_superhard(adb: Adb, cfg: BotConfig,
     canvas = result.canvas
     w_max, h_max = result.extent
 
+    print(f"stitched {canvas.shape[1]}x{canvas.shape[0]} "
+          f"(extent {w_max:.0f},{h_max:.0f})")
+    _save_debug(cfg, "board.png", canvas)
+
     arrows, labels = extract_arrows(canvas, cfg, ref_width=nav.sw)
     if not arrows:
         print("play_superhard: no arrows in stitched board")
         _save_debug(cfg, "board_empty.png", canvas)
         return False
+
     order = solve(arrows, labels, cfg)
-    _save_debug(cfg, "board_overlay.png", draw_overlay(canvas, arrows, order))
+    stuck = [] if order else stuck_set(arrows, labels, cfg)
+    _save_debug(cfg, "board_overlay.png",
+                draw_overlay(canvas, arrows, order, {a.id for a in stuck}))
     if order is None:
-        print("play_superhard: solver stuck - NOT tapping "
-              "(see board_overlay.png)")
+        clipped = _clipped_arrows(arrows, canvas.shape)
+        print(f"play_superhard: solver STUCK on {len(stuck)} of "
+              f"{len(arrows)} arrows - NOT tapping (no hearts risked).\n"
+              f"  see the MAGENTA boxes in board_overlay.png\n"
+              f"  first stuck heads: "
+              + ", ".join(f"({a.head[0]},{a.head[1]}) {a.direction}"
+                          for a in stuck[:8]))
+        if result.dropped_ink > 500 or clipped:
+            print(f"  LIKELY CAUSE: the stitch is INCOMPLETE - "
+                  f"{len(clipped)} arrows are cut off at the canvas border"
+                  f" and {result.dropped_ink} ink px fell outside it.\n"
+                  f"  Clipped arrows get a wrong head/direction, which jams "
+                  f"the solve. Re-run; if it repeats, the board edge wasn't "
+                  f"found (a blank strip at an edge can stop the search "
+                  f"early).")
         return False
 
     ref = canvas.copy()          # image model; whitened as arrows leave
@@ -214,6 +234,20 @@ def _try_tap(nav, adb: Adb, cfg: BotConfig, a: Arrow, w_max: float,
             return "blocked"                    # unmoved & aimed right
         sx, sy = sx2, sy2                        # missed: re-aim, tap once more
     return "blocked"
+
+
+def _clipped_arrows(arrows: list[Arrow], shape, tol: int = 2) -> list[Arrow]:
+    """Arrows whose bbox touches the canvas border - i.e. shapes cut off by
+    an incomplete stitch.  Their head/direction is read from a fragment, so
+    they are the usual reason a stitched board won't solve."""
+    h, w = shape[:2]
+    out = []
+    for a in arrows:
+        x, y, bw, bh = a.bbox
+        if (x <= tol or y <= tol
+                or x + bw >= w - tol or y + bh >= h - tol):
+            out.append(a)
+    return out
 
 
 def _mark(band: np.ndarray, sx: int, sy: int, num: int, d: str) -> np.ndarray:

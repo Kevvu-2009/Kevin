@@ -437,15 +437,33 @@ class StitchResult:
     extent: tuple[float, float]         # (W_max, H_max) max scroll offsets
     nav: Navigator                      # still tracking the live viewport
     tiles: list[tuple[int, int]] = field(default_factory=list)
+    dropped_ink: int = 0                # board pixels that fell OFF the
+                                        # canvas: >0 means the stitch is
+                                        # incomplete (clipped arrows)
 
 
-def _paste(canvas: np.ndarray, tile: np.ndarray, x: int, y: int) -> None:
+def _paste(canvas: np.ndarray, tile: np.ndarray, x: int, y: int,
+           cfg: BotConfig | None = None) -> int:
+    """Paste a tile at (x, y).  Returns how many INK pixels of the tile
+    landed outside the canvas - non-zero means real board content was lost
+    (the extent was under-measured), which shows up as arrows clipped at
+    the canvas border and a solver that then can't solve."""
     ch, cw = canvas.shape[:2]
     th, tw = tile.shape[:2]
     x0, y0 = max(0, x), max(0, y)
     x1, y1 = min(cw, x + tw), min(ch, y + th)
+
+    dropped = 0
+    if cfg is not None and (x0 > x or y0 > y or x1 < x + tw or y1 < y + th):
+        ink = _gray(tile) < cfg.ink_gray_thresh
+        total = int(ink.sum())
+        kept = int(ink[y0 - y:y1 - y, x0 - x:x1 - x].sum()) \
+            if (x1 > x0 and y1 > y0) else 0
+        dropped = total - kept
+
     if x1 > x0 and y1 > y0:
         canvas[y0:y1, x0:x1] = tile[y0 - y:y1 - y, x0 - x:x1 - x]
+    return dropped
 
 
 def refine_on_canvas(nav: Navigator, canvas: np.ndarray,
@@ -494,12 +512,19 @@ def capture_board(nav: Navigator, cfg: BotConfig,
     nav.snap(1, 0.0)
 
     # ---- raster sweep ---------------------------------------------------------
-    canvas = np.full((int(round(h_max)) + nav.bh,
-                      int(round(w_max)) + nav.bw, 3), 255, np.uint8)
+    # Margin on the right/bottom: the sweep can overshoot the measured
+    # extent slightly (scroll_to residue, paste-time refinement), and
+    # without slack that content is clipped off - which shows up as arrows
+    # cut at the canvas border and a board the solver then can't solve.
+    # The origin stays (0, 0), so no coordinate mapping changes.
+    margin = int(round(cfg.canvas_margin_frac * nav.bw))
+    canvas = np.full((int(round(h_max)) + nav.bh + margin,
+                      int(round(w_max)) + nav.bw + margin, 3), 255, np.uint8)
     sx, sy = nav.step(0), nav.step(1)
     ys = [float(v) for v in np.arange(0.0, h_max, sy)] + [h_max]
     xs = [float(v) for v in np.arange(0.0, w_max, sx)] + [w_max]
     tiles: list[tuple[int, int]] = []
+    dropped = 0
 
     for ri, y in enumerate(ys):
         if ri > 0:
@@ -511,7 +536,7 @@ def capture_board(nav: Navigator, cfg: BotConfig,
             if tiles:                     # first tile: pos is exact (0,0)
                 refine_on_canvas(nav, canvas, cfg)
             px, py = int(round(nav.pos[0])), int(round(nav.pos[1]))
-            _paste(canvas, nav.last, px, py)
+            dropped += _paste(canvas, nav.last, px, py, cfg)
             tiles.append((px, py))
             if dbg:
                 cv2.imwrite(str(dbg / f"tile_r{ri:02d}_x{px}_y{py}.png"),
@@ -520,7 +545,7 @@ def capture_board(nav: Navigator, cfg: BotConfig,
     if dbg:
         cv2.imwrite(str(dbg / "stitched.png"), canvas)
     return StitchResult(canvas=canvas, extent=(w_max, h_max), nav=nav,
-                        tiles=tiles)
+                        tiles=tiles, dropped_ink=dropped)
 
 
 # ---------------------------------------------------------------------------

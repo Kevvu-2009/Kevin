@@ -81,6 +81,9 @@ class BotConfig:
     # to the edge in steps of edge_creep_frac.
     alias_safe_frac: float = 0.12   # of band width
     edge_creep_frac: float = 0.08   # of band width
+    canvas_margin_frac: float = 0.25  # slack added to the stitch canvas
+                                    # (right/bottom) so a slight sweep
+                                    # overshoot can't clip board content
 
     # ---- play ----------------------------------------------------------
     tap_settle_s: float = 0.65      # wait for the fly-off animation
