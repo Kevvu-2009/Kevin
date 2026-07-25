@@ -1,0 +1,11 @@
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "I", "B", "UP", "C4"]
+# E501: long lines are allowed (repo-wide convention).
+# UP042: `(str, Enum)` is used deliberately and matches src/quantbot/integrations/base.py.
+ignore = ["E501", "UP042"]
+
+[lint.isort]
+known-first-party = ["app", "tests"]

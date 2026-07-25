@@ -1,0 +1,10 @@
+# ---- Runtime ----
+fastapi>=0.110           # webhook server
+uvicorn[standard]>=0.27  # ASGI server
+pydantic>=2.6            # payload schema validation
+ccxt>=4.2                # Bybit USDT-perp connectivity
+httpx>=0.27              # Telegram notifications
+python-dotenv>=1.0       # .env loading
+
+# SQLite is stdlib - no driver dependency.
+# Dev/test dependencies live in requirements-dev.txt.

@@ -1,0 +1,60 @@
+[Unit]
+Description=TradingView -> Bybit perps execution bot
+Documentation=file:/opt/tradingbot/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tradingbot
+Group=tradingbot
+WorkingDirectory=/opt/tradingbot
+
+# EnvironmentFile must be chmod 600 and owned by the service user: it holds the
+# API secret and the webhook secret.
+EnvironmentFile=/opt/tradingbot/.env
+
+# Entry point reads HOST/PORT from the environment and installs the JSON logger
+# before uvicorn starts.
+ExecStart=/opt/tradingbot/.venv/bin/python -m app.main
+
+# Always come back. On every start the bot reconciles against the exchange
+# before it will accept a single webhook, so an unattended restart cannot
+# double-size a position or leave one unprotected.
+Restart=always
+RestartSec=5
+
+# Do not give up after repeated crashes - an unprotected position needs the
+# reconcile loop running far more than it needs a quiet unit file.
+StartLimitIntervalSec=0
+
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# ---- Hardening --------------------------------------------------------------
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+
+# The only paths the service may write to: the SQLite database, the log file,
+# and the HALT switch.
+ReadWritePaths=/opt/tradingbot/data /opt/tradingbot/logs /opt/tradingbot
+
+# ---- Logging ----------------------------------------------------------------
+# Structured JSON goes to both stdout (journald) and LOG_FILE.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tradingbot
+
+[Install]
+WantedBy=multi-user.target

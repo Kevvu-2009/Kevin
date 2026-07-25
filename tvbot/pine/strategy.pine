@@ -1,0 +1,306 @@
+// =============================================================================
+//  TradingView -> Webhook -> Bybit USDT-Perp execution bot
+//  Signal generator: 21/200 EMA pullback continuation, fixed 1:3 reward:risk
+// =============================================================================
+//
+//  This script ONLY generates signals and emits webhook alerts. It never places
+//  an order anywhere. TradingView has no order-execution API; the only outbound
+//  channel is the alert webhook, which POSTs the JSON built by f_msg() below to
+//  a URL you control. All execution, sizing and exit management happens in the
+//  FastAPI server in ../app.
+//
+//  The strategy.entry/strategy.exit calls exist SOLELY to produce honest
+//  backtest statistics in the Strategy Tester. They have no effect on the live
+//  bot. Both paths use the identical stop/target values so the backtest and the
+//  server describe the same trade.
+//
+// -----------------------------------------------------------------------------
+//  REPAINTING / CONFIRMATION NOTES  (read this before trusting the backtest)
+// -----------------------------------------------------------------------------
+//  NON-REPAINTING (safe):
+//    * calc_on_every_tick = false  -> the script is evaluated only when a bar
+//      closes, so no condition can flicker true intrabar and then vanish.
+//    * alert(..., alert.freq_once_per_bar_close) -> the webhook fires at most
+//      once, on the confirmed bar close. Combined with the barstate.isconfirmed
+//      guard this is belt-and-braces: the alert cannot fire on a forming bar.
+//    * ta.ema / ta.rsi / ta.atr / ta.sma / ta.lowest / ta.highest / ta.barssince
+//      all read confirmed historical values at the moment of evaluation.
+//    * entry, stop and target are all computed from the SIGNAL BAR'S CLOSE and
+//      frozen into `var` state, so they cannot drift after the fact.
+//
+//  DEPENDS ON barstate.isconfirmed:
+//    * The alert() calls. On the realtime bar barstate.isconfirmed is false
+//      until the close tick, which is exactly when we want to transmit.
+//
+//  KNOWN BACKTEST-vs-LIVE DIFFERENCES (not repainting, but be aware):
+//    1. process_orders_on_close = true makes the backtest fill at the signal
+//       bar's close. Live, the server sends a bounded-slippage limit order a
+//       few hundred ms later. If price has already moved beyond the tolerance
+//       the server ABANDONS the signal. The backtest therefore takes some
+//       trades the live bot will skip -> live trade count <= backtest count.
+//       This biases the backtest optimistically. Budget for it.
+//    2. The backtest assumes the stop and target are both live from the entry
+//       bar. The server places them within ~1s of the entry fill. A gap inside
+//       that window is not modelled.
+//    3. If both stop and target would be touched inside one bar, TradingView
+//       resolves it pessimistically (stop first) only when the bar is bearish
+//       for a long. Real fills are tick-ordered. Treat 1-bar trades sceptically.
+//    4. Funding on perps is NOT modelled here. At a 1H timeframe with a 1:3
+//       target you will typically hold across 1-3 funding windows.
+// =============================================================================
+
+//@version=6
+strategy(
+     title                 = "TV Webhook Perps Bot - 21/200 EMA Pullback (fixed 1:3)",
+     shorttitle            = "TVBOT 1:3",
+     overlay               = true,
+     calc_on_every_tick    = false,
+     calc_on_order_fills   = false,
+     process_orders_on_close = true,
+     pyramiding            = 0,
+     initial_capital       = 10000,
+     default_qty_type      = strategy.fixed,
+     default_qty_value     = 1,
+     commission_type       = strategy.commission.percent,
+     commission_value      = 0.055,
+     slippage              = 2,
+     margin_long           = 33.34,
+     margin_short          = 33.34)
+
+// -----------------------------------------------------------------------------
+// Inputs
+// -----------------------------------------------------------------------------
+grpSig = "Signal"
+grpRsk = "Risk / regime"
+grpHok = "Webhook"
+
+emaFastLen   = input.int(21,  "Pullback EMA",            minval = 2,  group = grpSig)
+emaSlowLen   = input.int(200, "Trend EMA",               minval = 10, group = grpSig)
+trendSlopeLb = input.int(20,  "Trend slope lookback",    minval = 1,  group = grpSig)
+pullbackLb   = input.int(5,   "Pullback lookback (bars)", minval = 1, group = grpSig)
+rsiLen       = input.int(14,  "RSI length",              minval = 2,  group = grpSig)
+rsiLongMin   = input.float(40, "RSI long min",  group = grpSig)
+rsiLongMax   = input.float(68, "RSI long max",  group = grpSig)
+
+atrLen       = input.int(14,  "ATR length",              minval = 1,  group = grpRsk)
+atrAvgLen    = input.int(50,  "ATR average length",      minval = 1,  group = grpRsk)
+swingLb      = input.int(5,   "Stop swing lookback",     minval = 1,  group = grpRsk)
+atrStopMult  = input.float(0.5, "ATR stop buffer (x ATR)", step = 0.1, group = grpRsk)
+rrMultiple   = input.float(3.0, "Reward:Risk multiple",  step = 0.1,  group = grpRsk)
+minStopPct   = input.float(0.4, "Min stop distance (%)", step = 0.05, group = grpRsk)
+maxStopPct   = input.float(3.0, "Max stop distance (%)", step = 0.05, group = grpRsk)
+riskPctIn    = input.float(0.5, "Risk per trade (%)",    step = 0.05, group = grpRsk)
+maxLeverage  = input.float(3.0, "Max leverage (backtest cap)", step = 0.5, group = grpRsk)
+allowShorts  = input.bool(true, "Trade shorts",          group = grpRsk)
+
+// The secret is transport authentication only. It is NOT strong security:
+// TradingView cannot sign requests, so anyone who can read this chart or
+// intercept a plaintext POST can replay it. The server's real defences are the
+// IP allowlist, TLS, server-side sizing, idempotency and the RR sanity band.
+// Never publish this script publicly with a real secret in the default.
+webhookSecret = input.string("CHANGE_ME", "Webhook shared secret", group = grpHok)
+
+// -----------------------------------------------------------------------------
+// Indicators
+// -----------------------------------------------------------------------------
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+rsiVal  = ta.rsi(close, rsiLen)
+atrVal  = ta.atr(atrLen)
+atrAvg  = ta.sma(atrVal, atrAvgLen)
+
+// Mirror the RSI band around 50 for shorts: 40..68 long -> 32..60 short.
+rsiShortMin = 100.0 - rsiLongMax
+rsiShortMax = 100.0 - rsiLongMin
+
+// Volatility gate: skip dead tape.
+volatilityOk = atrVal > atrAvg
+
+// Enough history for every series to be valid.
+historyOk = bar_index > math.max(emaSlowLen + trendSlopeLb, atrLen + atrAvgLen)
+
+// -----------------------------------------------------------------------------
+// Trend filter
+// -----------------------------------------------------------------------------
+trendUp   = close > emaSlow and emaSlow > emaSlow[trendSlopeLb]
+trendDown = close < emaSlow and emaSlow < emaSlow[trendSlopeLb]
+
+// -----------------------------------------------------------------------------
+// Pullback detection
+//   ta.barssince() returns 0 on the bar where the condition is true, so
+//   "<= pullbackLb - 1" means "within the last `pullbackLb` bars, current bar
+//   included". nz(..., 9999) guards the pre-history na.
+// -----------------------------------------------------------------------------
+touchedFast     = low  <= emaFast
+touchedFastDown = high >= emaFast
+pulledBackLong  = nz(ta.barssince(touchedFast),     9999) <= pullbackLb - 1
+pulledBackShort = nz(ta.barssince(touchedFastDown), 9999) <= pullbackLb - 1
+
+// -----------------------------------------------------------------------------
+// Entry triggers
+// -----------------------------------------------------------------------------
+triggerLong  = pulledBackLong  and close > emaFast and close > open
+triggerShort = pulledBackShort and close < emaFast and close < open
+
+rsiOkLong  = rsiVal >= rsiLongMin  and rsiVal <= rsiLongMax
+rsiOkShort = rsiVal >= rsiShortMin and rsiVal <= rsiShortMax
+
+// -----------------------------------------------------------------------------
+// Stop / target geometry (computed from the signal bar close)
+// -----------------------------------------------------------------------------
+entryPx = close
+
+stopLong  = ta.lowest(low,  swingLb) - atrStopMult * atrVal
+stopShort = ta.highest(high, swingLb) + atrStopMult * atrVal
+
+riskLong  = entryPx - stopLong
+riskShort = stopShort - entryPx
+
+// Volatility-regime gate on stop distance. Rejecting these is what keeps
+// notional bounded: risk% / stop% is the implied leverage, so a 0.1% stop at
+// 0.5% risk would demand 5x. The 0.4% floor caps implied leverage at 1.25x.
+stopPctLong  = riskLong  / entryPx * 100.0
+stopPctShort = riskShort / entryPx * 100.0
+regimeOkLong  = riskLong  > 0 and stopPctLong  >= minStopPct and stopPctLong  <= maxStopPct
+regimeOkShort = riskShort > 0 and stopPctShort >= minStopPct and stopPctShort <= maxStopPct
+
+targetLong  = entryPx + rrMultiple * riskLong
+targetShort = entryPx - rrMultiple * riskShort
+
+// -----------------------------------------------------------------------------
+// Final setups
+// -----------------------------------------------------------------------------
+flat = strategy.position_size == 0
+
+longSetup  = historyOk and flat and trendUp   and triggerLong  and rsiOkLong  and volatilityOk and regimeOkLong
+shortSetup = historyOk and flat and trendDown and triggerShort and rsiOkShort and volatilityOk and regimeOkShort and allowShorts
+
+// -----------------------------------------------------------------------------
+// Backtest position sizing (mirrors app/sizing.py so the equity curve is honest)
+//   qty = (equity * risk%) / |entry - stop|, capped at equity * maxLev / entry
+// -----------------------------------------------------------------------------
+riskFrac = riskPctIn / 100.0
+
+f_qty(_risk_per_unit) =>
+    raw   = _risk_per_unit > 0 ? (strategy.equity * riskFrac) / _risk_per_unit : 0.0
+    capQty = strategy.equity * maxLeverage / entryPx
+    math.min(raw, capQty)
+
+qtyLong  = f_qty(riskLong)
+qtyShort = f_qty(riskShort)
+
+// -----------------------------------------------------------------------------
+// Webhook payload builder
+//   Schema must match app/models.py::WebhookPayload exactly.
+//   - "#.##########" avoids scientific notation and thousands separators.
+//   - bar_time      = bar OPEN time (matches TradingView's {{time}})
+//   - bar_close_time= bar CLOSE time; the server uses this for staleness.
+//     Sending both means the server never has to guess which one it got.
+// -----------------------------------------------------------------------------
+f_num(_x) => str.tostring(_x, "#.##########")
+f_int(_x) => str.tostring(_x, "#")
+
+f_msg(_side, _entry, _stop, _target) =>
+    '{"secret":"'          + webhookSecret +
+    '","signal_id":"'      + syminfo.ticker + "-" + timeframe.period + "-" + f_int(time_close) +
+    '","action":"entry"'   +
+    ',"side":"'            + _side +
+    '","symbol":"'         + syminfo.ticker +
+    '","entry":'           + f_num(_entry) +
+    ',"stop":'             + f_num(_stop) +
+    ',"target":'           + f_num(_target) +
+    ',"timeframe":"'       + timeframe.period +
+    '","bar_time":'        + f_int(time) +
+    ',"bar_close_time":'   + f_int(time_close) +
+    '}'
+
+// -----------------------------------------------------------------------------
+// Orders (backtest only) + alerts (live signal transport)
+// -----------------------------------------------------------------------------
+var float activeStop   = na
+var float activeTarget = na
+
+if longSetup
+    activeStop   := stopLong
+    activeTarget := targetLong
+    strategy.entry("L", strategy.long, qty = qtyLong)
+    if barstate.isconfirmed
+        alert(f_msg("long", entryPx, stopLong, targetLong), alert.freq_once_per_bar_close)
+
+if shortSetup
+    activeStop   := stopShort
+    activeTarget := targetShort
+    strategy.entry("S", strategy.short, qty = qtyShort)
+    if barstate.isconfirmed
+        alert(f_msg("short", entryPx, stopShort, targetShort), alert.freq_once_per_bar_close)
+
+// Single fixed exit. No partials, no trailing, no breakeven move — the 1:3
+// ratio is preserved exactly so the win-rate statistic means what it says.
+if strategy.position_size > 0
+    strategy.exit("L-x", from_entry = "L", stop = activeStop, limit = activeTarget)
+if strategy.position_size < 0
+    strategy.exit("S-x", from_entry = "S", stop = activeStop, limit = activeTarget)
+
+if strategy.position_size == 0
+    activeStop   := na
+    activeTarget := na
+
+// -----------------------------------------------------------------------------
+// Plots
+// -----------------------------------------------------------------------------
+plot(emaFast, "EMA 21",  color = color.new(color.orange, 0), linewidth = 1)
+plot(emaSlow, "EMA 200", color = color.new(color.blue,   0), linewidth = 2)
+plot(strategy.position_size != 0 ? activeStop   : na, "Active stop",   color = color.new(color.red,  0),  style = plot.style_linebr)
+plot(strategy.position_size != 0 ? activeTarget : na, "Active target", color = color.new(color.green, 0), style = plot.style_linebr)
+
+plotshape(longSetup,  "Long setup",  location = location.belowbar, style = shape.triangleup,   color = color.new(color.green, 0), size = size.tiny)
+plotshape(shortSetup, "Short setup", location = location.abovebar, style = shape.triangledown, color = color.new(color.red,   0), size = size.tiny)
+
+bgcolor(volatilityOk ? na : color.new(color.gray, 90), title = "Dead-tape (ATR below average)")
+
+// -----------------------------------------------------------------------------
+// Expected-behaviour summary panel
+// -----------------------------------------------------------------------------
+var table info = table.new(position.top_right, 2, 8, border_width = 1)
+if barstate.islast
+    table.cell(info, 0, 0, "Regime",        text_color = color.white, bgcolor = color.new(color.blue, 30))
+    table.cell(info, 1, 0, trendUp ? "UP" : trendDown ? "DOWN" : "NONE", text_color = color.white, bgcolor = color.new(color.blue, 30))
+    table.cell(info, 0, 1, "ATR vs avg")
+    table.cell(info, 1, 1, volatilityOk ? "LIVE" : "DEAD")
+    table.cell(info, 0, 2, "RSI")
+    table.cell(info, 1, 2, str.tostring(rsiVal, "#.#"))
+    table.cell(info, 0, 3, "Stop dist %")
+    table.cell(info, 1, 3, str.tostring(trendDown ? stopPctShort : stopPctLong, "#.##"))
+    table.cell(info, 0, 4, "Risk / trade")
+    table.cell(info, 1, 4, str.tostring(riskPctIn, "#.##") + "%")
+    table.cell(info, 0, 5, "R:R")
+    table.cell(info, 1, 5, "1:" + str.tostring(rrMultiple, "#.#"))
+    table.cell(info, 0, 6, "Position")
+    table.cell(info, 1, 6, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT")
+    table.cell(info, 0, 7, "Bar close (ms)")
+    table.cell(info, 1, 7, f_int(time_close))
+
+// =============================================================================
+//  EXPECTED BEHAVIOUR
+// =============================================================================
+//  Regime          Only trades with the 200 EMA: long above a rising 200 EMA,
+//                  short below a falling one. In chop the 200 EMA slope filter
+//                  and the ATR gate together remove most of the tape.
+//  Frequency       On 1H BTC/ETH expect roughly 2-6 signals per symbol per
+//                  month. Every extra filter is a trade you do not take.
+//  Win rate        A fixed 1:3 target with no trailing needs >25% wins to
+//                  break even before costs; ~30-35% after Bybit taker fees and
+//                  funding. If the Strategy Tester shows a win rate near 50%
+//                  with 1:3, something is wrong (look for lookahead first).
+//  Trade shape     Many small -1R losses, occasional +3R. The equity curve is
+//                  step-like with long flat stretches. This is normal and is
+//                  the main psychological reason people override the bot and
+//                  destroy the edge.
+//  Sizing          0.5% equity risk per trade. Because the stop-distance gate
+//                  bounds stops to 0.4%-3.0%, implied leverage stays in
+//                  roughly 0.17x-1.25x — comfortably inside the 3x cap. The
+//                  cap only ever binds if you loosen minStopPct.
+//  Costs           commission_value = 0.055 models Bybit's taker fee on BOTH
+//                  sides. Funding is not modelled; subtract roughly 0.01%-0.03%
+//                  per 8h held on a typical trend.
+// =============================================================================
