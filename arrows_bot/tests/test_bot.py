@@ -198,6 +198,45 @@ def test_min_swipe_floor():
     assert len(sent) == before
 
 
+def test_oversized_arrow_is_tappable():
+    """An arrow LONGER THAN THE SCREEN must still be localizable and
+    tappable.  Previously the template was built from the whole arrow, so
+    anything bigger than the band could never match and was skipped
+    forever ('couldn't localize any free arrows')."""
+    import cv2
+
+    from arrows_bot.play import _fully_visible, _locate_arrow
+    c = cfg()
+    # board with one very long horizontal arrow (wider than the screen)
+    board = np.full((2600, 3000, 3), 255, np.uint8)
+    y = 1300
+    cv2.line(board, (300, y), (2600, y), (90, 30, 30), 18)      # long shaft
+    cv2.arrowedLine(board, (2400, y), (2680, y), (90, 30, 30), 18,
+                    tipLength=0.5)                              # head, points R
+    arrows, _ = extract_arrows(board, c, ref_width=SW)
+    assert len(arrows) == 1
+    big = arrows[0]
+    assert big.bbox[2] > SW, "test arrow should exceed the screen width"
+
+    fake = FakeAdb(board, c, sw=SW, sh=SH)
+    nav = Navigator(fake, c)
+    bx0, by0 = nav.band[0], nav.band[1]
+    # centre the viewport on the head, then set pos to the TRUE board
+    # coords of the band's top-left (band pixel (0,0) == board (vx+bx0, vy+by0))
+    fake.vx = float(np.clip(big.head[0] - SW // 2, 0, board.shape[1] - SW))
+    fake.vy = float(np.clip(big.head[1] - SH // 2, 0, board.shape[0] - SH))
+    nav.pos = np.array([fake.vx + bx0, fake.vy + by0])
+    nav.capture()
+
+    assert _fully_visible(nav, big), "head is centred; must count as visible"
+    got = _locate_arrow(nav, board, big, c)
+    assert got is not None, "oversized arrow could not be localized"
+    sx, sy = got
+    # the returned aim point must land on the real head in the live band
+    assert abs((sx + nav.pos[0]) - big.head[0]) <= 12
+    assert abs((sy + nav.pos[1]) - big.head[1]) <= 12
+
+
 def test_board_like_vs_ad():
     from arrows_bot.afk import board_like
     c = cfg()

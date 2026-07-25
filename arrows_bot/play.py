@@ -243,13 +243,15 @@ def _try_tap(nav, adb: Adb, cfg: BotConfig, a: Arrow, w_max: float,
     return "blocked"
 
 
-def _fully_visible(nav, a: Arrow, pad: int = 12) -> bool:
-    """Is the target's whole bbox already inside the capture band at the
-    current viewport?  If so, no scroll is needed to tap it."""
-    x, y, w, h = a.bbox
-    sx, sy = x - nav.pos[0], y - nav.pos[1]
-    return (sx >= pad and sy >= pad
-            and sx + w <= nav.bw - pad and sy + h <= nav.bh - pad)
+def _fully_visible(nav, a: Arrow) -> bool:
+    """Is the target's HEAD (plus enough context to match it) already well
+    inside the band?  Only the head must be on screen to tap it - requiring
+    the whole bbox would never be satisfiable for arrows longer than the
+    screen, which are common on Super Hard boards."""
+    cx, cy = a.tap_point
+    sx, sy = cx - nav.pos[0], cy - nav.pos[1]
+    pad = max(24.0, 3.0 * a.half_width)
+    return (pad <= sx <= nav.bw - pad) and (pad <= sy <= nav.bh - pad)
 
 
 def _report_merges(arrows: list[Arrow], cfg: BotConfig, sw: int) -> None:
@@ -325,10 +327,15 @@ def _aim_hits_target(nav, cfg: BotConfig, a: Arrow, sx: int, sy: int) -> bool:
         match = near
     if match.direction != a.direction:
         return False
-    aw, ah = a.bbox[2], a.bbox[3]
-    mw, mh = match.bbox[2], match.bbox[3]        # loose size sanity
-    return (0.5 * aw - 8 <= mw <= 1.8 * aw + 8
-            and 0.5 * ah - 8 <= mh <= 1.8 * ah + 8)
+    # Loose size sanity.  Expected dims are clamped to the band: an arrow
+    # longer than the screen can only ever appear as a fragment, and
+    # comparing that fragment against its full stitched size would reject
+    # every big arrow.
+    aw = min(a.bbox[2], nav.bw)
+    ah = min(a.bbox[3], nav.bh)
+    mw, mh = match.bbox[2], match.bbox[3]
+    return (0.4 * aw - 8 <= mw <= 1.8 * aw + 8
+            and 0.4 * ah - 8 <= mh <= 1.8 * ah + 8)
 
 
 def _erase(ref: np.ndarray, labels: np.ndarray, a: Arrow) -> None:
@@ -412,15 +419,22 @@ def _locate_arrow(nav, ref: np.ndarray, a: Arrow,
     position is the only safe disambiguator, and the caller guarantees it
     is meaningful (blind corner reset when in doubt).  On success
     re-anchors nav.pos and returns the tap point in band coordinates."""
+    # Template: a region CENTRED ON THE HEAD, capped so it always fits in
+    # the band with room to search.  Using the whole arrow made every arrow
+    # longer than the screen permanently un-tappable (its template couldn't
+    # fit, so it was skipped forever) - and only the head must be on screen
+    # to tap it anyway.
     x, y, w, h = a.bbox
     m = nav._patch // 2
-    x0, y0 = max(0, x - m), max(0, y - m)
-    x1 = min(ref.shape[1], x + w + m)
-    y1 = min(ref.shape[0], y + h + m)
-    tpl = cv2.cvtColor(ref[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
+    cx, cy = a.tap_point
+    rw = int(min(w + 2 * m, nav.bw * 0.40))
+    rh = int(min(h + 2 * m, nav.bh * 0.40))
+    x0 = int(np.clip(cx - rw // 2, 0, max(0, ref.shape[1] - rw)))
+    y0 = int(np.clip(cy - rh // 2, 0, max(0, ref.shape[0] - rh)))
+    tpl = cv2.cvtColor(ref[y0:y0 + rh, x0:x0 + rw], cv2.COLOR_BGR2GRAY)
     band = cv2.cvtColor(nav.last, cv2.COLOR_BGR2GRAY)
     th, tw = tpl.shape
-    if th >= band.shape[0] or tw >= band.shape[1]:
+    if th >= band.shape[0] or tw >= band.shape[1] or th < 8 or tw < 8:
         return None
 
     res = cv2.matchTemplate(band, tpl, cv2.TM_CCOEFF_NORMED)
