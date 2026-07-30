@@ -243,15 +243,38 @@ def _try_tap(nav, adb: Adb, cfg: BotConfig, a: Arrow, w_max: float,
     return "blocked"
 
 
+def _tpl_size(nav, a: Arrow) -> tuple[int, int]:
+    """Size of the head-centred template _locate_arrow will build for `a`.
+    Kept here so _fully_visible and _locate_arrow can never disagree about
+    how much context the match needs."""
+    m = nav._patch // 2
+    return (int(min(a.bbox[2] + 2 * m, nav.bw * 0.40)),
+            int(min(a.bbox[3] + 2 * m, nav.bh * 0.40)))
+
+
 def _fully_visible(nav, a: Arrow) -> bool:
-    """Is the target's HEAD (plus enough context to match it) already well
-    inside the band?  Only the head must be on screen to tap it - requiring
-    the whole bbox would never be satisfiable for arrows longer than the
-    screen, which are common on Super Hard boards."""
+    """Is the target's HEAD - plus the context needed to MATCH it - already
+    well inside the band?  Only the head must be on screen to tap it
+    (requiring the whole bbox is unsatisfiable for arrows longer than the
+    screen, which are common on Super Hard boards).
+
+    But "the head" alone is not enough to localize: _locate_arrow matches a
+    head-centred template that extends half its size around the head, so
+    that much must be on screen too.  A stroke-scale pad (3*half_width,
+    ~70px) let the head sit right at the band edge, where the template has
+    almost nothing to match against - localization then either found no
+    strong peak, or found one whose live fragment was too small for the aim
+    gate.  Either way the arrow was skipped, and because this said "visible"
+    _acquire never re-centred it, so the stall repeated forever.
+    """
     cx, cy = a.tap_point
     sx, sy = cx - nav.pos[0], cy - nav.pos[1]
-    pad = max(24.0, 3.0 * a.half_width)
-    return (pad <= sx <= nav.bw - pad) and (pad <= sy <= nav.bh - pad)
+    tw, th = _tpl_size(nav, a)
+    # half the template, floored at the old stroke-scale pad.  Templates are
+    # capped at 40% of the band, so this is at most 20% - always satisfiable.
+    px = max(24.0, 3.0 * a.half_width, tw / 2.0)
+    py = max(24.0, 3.0 * a.half_width, th / 2.0)
+    return (px <= sx <= nav.bw - px) and (py <= sy <= nav.bh - py)
 
 
 def _report_merges(arrows: list[Arrow], cfg: BotConfig, sw: int) -> None:
@@ -327,12 +350,16 @@ def _aim_hits_target(nav, cfg: BotConfig, a: Arrow, sx: int, sy: int) -> bool:
         match = near
     if match.direction != a.direction:
         return False
-    # Loose size sanity.  Expected dims are clamped to the band: an arrow
-    # longer than the screen can only ever appear as a fragment, and
-    # comparing that fragment against its full stitched size would reject
-    # every big arrow.
-    aw = min(a.bbox[2], nav.bw)
-    ah = min(a.bbox[3], nav.bh)
+    # Loose size sanity against the fragment we EXPECT to see: the part of
+    # the arrow that actually intersects the band at the current viewport.
+    # An arrow longer than the screen only ever appears as a fragment, and
+    # which fragment depends on where the viewport sits - clamping to the
+    # whole band instead (min(bbox, band)) demanded ~40% of a screenful of
+    # ink even when the head sat near the band edge, so every big arrow was
+    # rejected there and skipped forever.
+    bx, by, bw_, bh_ = a.bbox
+    aw = max(0.0, min(bx + bw_, nav.pos[0] + nav.bw) - max(bx, nav.pos[0]))
+    ah = max(0.0, min(by + bh_, nav.pos[1] + nav.bh) - max(by, nav.pos[1]))
     mw, mh = match.bbox[2], match.bbox[3]
     return (0.4 * aw - 8 <= mw <= 1.8 * aw + 8
             and 0.4 * ah - 8 <= mh <= 1.8 * ah + 8)

@@ -237,6 +237,70 @@ def test_oversized_arrow_is_tappable():
     assert abs((sy + nav.pos[1]) - big.head[1]) <= 12
 
 
+def test_visible_implies_tappable():
+    """THE INVARIANT: if _fully_visible says an arrow needs no scroll, then
+    _locate_arrow must be able to find it AND the aim gate must accept it.
+
+    When these disagree the bot deadlocks: _acquire only re-centres an arrow
+    that is NOT _fully_visible, so an arrow that is "visible" but fails
+    localization or the aim gate is skipped, retried from the identical
+    viewport, skipped again - forever ("couldn't localize any of N
+    currently-free arrows", then "no progress").
+
+    Long arrows broke it: _fully_visible used a stroke-scale pad
+    (3*half_width, ~70px) while _locate_arrow's head-centred template needs
+    half its own size of context (~537px) and the aim gate compared against
+    min(bbox, band) (~1043px of expected ink).  Both are far larger than the
+    pad, so heads near the band edge passed _fully_visible and then failed
+    downstream.  Observed on device: 20 arrows cleared, then a hard stall
+    with tap_020.png written but no blocked_020.png (it never tapped).
+    """
+    import cv2
+
+    from arrows_bot.play import (_aim_hits_target, _fully_visible,
+                                 _locate_arrow)
+    c = cfg()
+    sw, sh = 1900, 3840                  # the resolution the bot runs at
+    length, stroke = 2600, 26
+    board = np.full((length + 5000, 3000, 3), 255, np.uint8)
+    x, y0 = 1500, 1500                   # long arrow pointing DOWN
+    cv2.line(board, (x, y0), (x, y0 + length - 200), (90, 30, 30), stroke)
+    cv2.arrowedLine(board, (x, y0 + length - 400), (x, y0 + length),
+                    (90, 30, 30), stroke, tipLength=0.5)
+
+    arrows, _ = extract_arrows(board, c, ref_width=sw)
+    assert len(arrows) == 1
+    a = arrows[0]
+
+    fake = FakeAdb(board, c, sw=sw, sh=sh)
+    nav = Navigator(fake, c)
+    assert a.bbox[3] > 0.9 * nav.bh, "test arrow should be band-scale long"
+    bx0, by0 = nav.band[0], nav.band[1]
+    hx, hy = a.tap_point
+
+    checked = 0
+    for frac in (0.03, 0.06, 0.10, 0.20, 0.35, 0.50, 0.70, 0.85):
+        fake.vy = float(np.clip(hy - by0 - frac * nav.bh, 0,
+                                board.shape[0] - sh))
+        fake.vx = float(np.clip(hx - sw // 2, 0, board.shape[1] - sw))
+        nav.pos = np.array([fake.vx + bx0, fake.vy + by0])
+        nav.capture()
+        if not _fully_visible(nav, a):
+            continue                      # _acquire will scroll: fine
+        checked += 1
+        sy_in_band = hy - nav.pos[1]
+        got = _locate_arrow(nav, board, a, c)
+        assert got is not None, (
+            f"_fully_visible=True but _locate_arrow failed "
+            f"(head {sy_in_band:.0f}px into a {nav.bh}px band) - "
+            f"this arrow can never be tapped")
+        assert _aim_hits_target(nav, c, a, got[0], got[1]), (
+            f"_fully_visible=True and localized, but the aim gate rejected "
+            f"it (head {sy_in_band:.0f}px into a {nav.bh}px band) - "
+            f"this arrow can never be tapped")
+    assert checked >= 3, "test did not exercise enough visible positions"
+
+
 def test_board_like_vs_ad():
     from arrows_bot.afk import board_like
     c = cfg()
