@@ -301,6 +301,28 @@ def test_visible_implies_tappable():
     assert checked >= 3, "test did not exercise enough visible positions"
 
 
+def test_screencap_raw_decoder():
+    """`screencap` without -p returns uint32 (w, h, format[, colorspace])
+    then w*h*4 RGBA bytes.  Both header lengths are in the wild, and an
+    unrecognised buffer must return None so screencap() falls back to PNG
+    rather than handing back garbage pixels."""
+    from arrows_bot.adb import Adb
+    w, h = 7, 5
+    rgba = np.random.default_rng(0).integers(0, 255, (h, w, 4), dtype=np.uint8)
+    for header in (12, 16):
+        buf = (np.array([w, h, 1, 0][:header // 4], np.uint32).tobytes()
+               + rgba.tobytes())
+        got = Adb._decode_raw(buf)
+        assert got is not None, f"{header}-byte header not recognised"
+        assert got.shape == (h, w, 3)
+        np.testing.assert_array_equal(got, rgba[:, :, [2, 1, 0]])
+
+    assert Adb._decode_raw(b"") is None
+    assert Adb._decode_raw(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64) is None
+    short = np.array([w, h, 1], np.uint32).tobytes() + rgba.tobytes()[:-9]
+    assert Adb._decode_raw(short) is None, "truncated buffer must not decode"
+
+
 def test_board_like_vs_ad():
     from arrows_bot.afk import board_like
     c = cfg()

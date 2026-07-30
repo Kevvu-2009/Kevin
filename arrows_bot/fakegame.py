@@ -165,6 +165,13 @@ class FakeAdb:
         self.vx = float(np.clip(self.vx + dx, 0, self.board.shape[1] - self.sw))
         self.vy = float(np.clip(self.vy + dy, 0, self.board.shape[0] - self.sh))
 
+    def swipe_batch(self, moves, duration_ms=None) -> None:
+        """Same contract as Adb.swipe_batch: several gestures, one call.
+        Modelled as the individual swipes it expands to, so the tap-slop
+        hazard is still simulated for every one of them."""
+        for x1, y1, x2, y2 in moves:
+            self.swipe(x1, y1, x2, y2, duration_ms)
+
     def tap(self, x, y) -> None:
         bx = int(round(self.vx + x))
         by = int(round(self.vy + y))

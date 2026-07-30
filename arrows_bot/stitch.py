@@ -231,23 +231,34 @@ class Navigator:
         return max(40.0, self.cfg.min_swipe_frac * self.bw)
 
     # -- swipes --------------------------------------------------------------
-    def _swipe(self, dx: float, dy: float) -> None:
-        """One physical swipe intending viewport += (dx, dy).  The finger
-        moves opposite to the viewport: content follows the finger.
+    def _swipe_points(self, dx: float, dy: float
+                      ) -> tuple[float, float, float, float] | None:
+        """Finger endpoints (x1, y1, x2, y2) for an intended viewport move
+        of (dx, dy), or None when there is nothing to do.
 
-        A too-short drag would register as a tap, so the finger travel is
-        floored at min_swipe (the extra travel is harmless: scroll()
-        MEASURES the real shift afterwards, so over-travel self-corrects)."""
+        The finger moves opposite to the viewport: content follows the
+        finger.  A too-short drag would register as a TAP (which flies an
+        arrow off and costs a heart), so travel is floored at min_swipe -
+        the extra travel is harmless because scroll() MEASURES the real
+        shift afterwards, so over-travel self-corrects.  Shared with
+        blind_reset's batched path so that floor can never be bypassed."""
         x0, y0, x1, y1 = self.band
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
         fx, fy = dx / self.ratio, dy / self.ratio
         length = float(np.hypot(fx, fy))
         if length == 0.0:
-            return                               # nothing to do - never tap
+            return None                          # nothing to do - never tap
         if length < self.min_swipe:
             scale = self.min_swipe / length
             fx, fy = fx * scale, fy * scale
-        self.adb.swipe(cx + fx / 2, cy + fy / 2, cx - fx / 2, cy - fy / 2)
+        return (cx + fx / 2, cy + fy / 2, cx - fx / 2, cy - fy / 2)
+
+    def _swipe(self, dx: float, dy: float) -> None:
+        """One physical swipe intending viewport += (dx, dy)."""
+        pts = self._swipe_points(dx, dy)
+        if pts is None:
+            return
+        self.adb.swipe(*pts)
         self.fresh = False                       # viewport moved
         self.adb.sleep(self.cfg.swipe_settle_s)
 
@@ -353,16 +364,25 @@ class Navigator:
           1. coarse seek to the far edge (pos gets contaminated by the
              saturating swipe - only used as an upper bound),
           2. coarse seek back to the origin edge and snap to 0,
-          3. free scroll to ~2 steps short of the far edge (never
-             saturates, every swipe measured in the tight window),
+          3. free scroll to just short of the far edge (never saturates,
+             every swipe measured in the tight window),
           4. creep the final stretch.
+
+        Step 3 only has to undershoot the TRUE edge.  The coarse seek
+        overshoots by at most one step, so the true extent is in
+        [coarse - step, coarse]; backing off one step plus a few creeps is
+        enough to guarantee an undershoot.  Backing off two full steps
+        instead (the old value) was safe but left up to 2*step to cover at
+        creep resolution - on a tall board that is 20+ extra swipes, and
+        swipes dominate the stitch's runtime.
         """
         fwd, back = ("R", "L") if axis == 0 else ("D", "U")
         self.seek_edge(fwd)
         coarse = float(self.pos[axis])           # >= true extent
         self.seek_edge(back)
         self.snap(axis, 0.0)
-        target = max(0.0, coarse - 2 * self.step(axis))
+        creep = max(24.0, self.cfg.edge_creep_frac * self.bw)
+        target = max(0.0, coarse - self.step(axis) - 3 * creep)
         self.scroll_to(axis, target)
         self.creep_to_edge(fwd)
         return float(self.pos[axis])
@@ -404,11 +424,30 @@ class Navigator:
         fixed number of full steps with NO measurement - the scroll clamps
         at the true corner no matter how blank the board is, so afterwards
         pos = (0, 0) is exact.  The recovery of last resort when position
-        tracking has been starved of ink."""
-        for _ in range(int(np.ceil(w_max / self.step(0))) + 2):
-            self._swipe(-self.step(0), 0.0)
-        for _ in range(int(np.ceil(h_max / self.step(1))) + 2):
-            self._swipe(0.0, -self.step(1))
+        tracking has been starved of ink.
+
+        Nothing here is measured between swipes, so the whole sequence goes
+        out in ONE adb call when the backend supports it: this is the single
+        most swipe-heavy operation in the bot, and per-swipe adb + `input`
+        startup overhead usually costs more than the gestures themselves."""
+        moves = []
+        for axis, extent in ((0, w_max), (1, h_max)):
+            n = int(np.ceil(extent / self.step(axis))) + 2
+            d = (-self.step(0), 0.0) if axis == 0 else (0.0, -self.step(1))
+            pts = self._swipe_points(*d)
+            if pts is not None:
+                moves += [pts] * n
+
+        batch = getattr(self.adb, "swipe_batch", None)
+        if batch is not None:
+            batch(moves)
+            self.fresh = False
+            self.adb.sleep(self.cfg.swipe_settle_s)
+        else:
+            for x1, y1, x2, y2 in moves:
+                self.adb.swipe(x1, y1, x2, y2)
+                self.fresh = False
+            self.adb.sleep(self.cfg.swipe_settle_s)
         self.capture()
         self.pos = np.zeros(2, dtype=np.float64)
 

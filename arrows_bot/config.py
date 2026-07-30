@@ -17,6 +17,16 @@ class BotConfig:
     adb_path: str = r"C:\platform-tools\adb.exe"
     adb_serial: str = ""            # empty = default device
     screencap_retries: int = 3
+    screencap_raw: bool = False     # `screencap` (raw RGBA) instead of
+                                    # `screencap -p` (PNG).  Screenshots are
+                                    # ~half the bot's runtime, and the two
+                                    # trade device CPU (PNG-encoding 7M+
+                                    # pixels on a virtualised core) against
+                                    # transfer size (~30 MB raw at
+                                    # 1900x3840).  Which wins depends on the
+                                    # machine - measure with
+                                    # `python -m arrows_bot probe --time`
+                                    # and set whichever is faster.
 
     # ---- ink / segmentation ------------------------------------------
     ink_gray_thresh: int = 140      # gray < thresh  ->  dark (navy) ink
@@ -42,16 +52,27 @@ class BotConfig:
     corridor_width_factor: float = 1.2
 
     # ---- swipes / scrolling -------------------------------------------
-    swipe_duration_ms: int = 800    # deliberate drag: no fling, and (with
+    swipe_duration_ms: int = 300    # deliberate drag: no fling, and (with
                                     # min_swipe_frac) never read as a tap.
                                     # Tap-vs-scroll is decided by DISTANCE,
-                                    # so this can stay brisk; raise it if
-                                    # BlueStacks ever flings/overshoots.
+                                    # not duration, so this only needs to be
+                                    # slow enough not to FLING.  It is paid
+                                    # on every single swipe and swipes
+                                    # dominate runtime, so it is the biggest
+                                    # single speed knob here.  RAISE it (600,
+                                    # 800) if BlueStacks starts flinging or
+                                    # overshooting - the symptom is scrolls
+                                    # measuring much larger than intended.
     min_swipe_frac: float = 0.05    # shortest finger travel = frac * band
                                     # width; below OS touch-slop a swipe is
                                     # read as a TAP (flies an arrow, -1 heart)
     swipe_margin_frac: float = 0.06 # keep swipe endpoints inside the band
-    swipe_settle_s: float = 0.25    # wait after a swipe before screencap
+    swipe_settle_s: float = 0.12    # wait after a swipe before screencap.
+                                    # Also paid on every swipe; too low just
+                                    # means a blurred/mid-scroll frame, which
+                                    # registration REJECTS (costing a retry),
+                                    # so it fails safe - raise it if scrolls
+                                    # often come back unmeasurable.
     scroll_step_frac: float = 0.60  # scroll step = frac * band dimension
     swipe_ratio: float = 1.0        # measured content-px per swipe-px
                                     # (auto-calibrated at runtime)

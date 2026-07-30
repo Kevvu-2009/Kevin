@@ -66,6 +66,52 @@ def _report_board(board_bgr, cfg: BotConfig, overlay_name: str,
     return order
 
 
+def _time_roundtrips(adb, cfg: BotConfig, n: int = 5) -> None:
+    """Measure what the bot actually spends its time on.  Play is dominated
+    by ADB round-trips, not by any of the image processing, so this is the
+    number to tune against."""
+    import statistics
+    import time
+
+    def bench(label, fn):
+        ts = []
+        for _ in range(n):
+            t = time.perf_counter()
+            fn()
+            ts.append(time.perf_counter() - t)
+        print(f"  {label:<34} {1000*statistics.median(ts):7.0f} ms "
+              f"(min {1000*min(ts):.0f})")
+        return statistics.median(ts)
+
+    print(f"\nround-trip timings, median of {n}:")
+    was = cfg.screencap_raw
+    cfg.screencap_raw = False
+    png = bench("screencap  -p  (PNG)", adb.screencap)
+    cfg.screencap_raw = True
+    try:
+        raw = bench("screencap      (raw RGBA)", adb.screencap)
+    except Exception as e:                                  # noqa: BLE001
+        print(f"    raw capture unavailable: {e}")
+        raw = float("inf")
+    cfg.screencap_raw = was
+
+    w, h = adb.screen_size()
+    cx, cy = w // 2, h // 2
+    d = max(80, int(0.20 * w))
+    bench(f"swipe {cfg.swipe_duration_ms}ms",
+          lambda: adb.swipe(cx - d // 2, cy, cx + d // 2, cy))
+    batch = [(cx - d // 2, cy, cx + d // 2, cy)] * 4
+    bench("swipe x4 batched (1 adb call)", lambda: adb.swipe_batch(batch))
+
+    best = "raw" if raw < png else "PNG"
+    print(f"\n  -> set screencap_raw = {str(raw < png).lower()} "
+          f"({best} is faster here"
+          + ("" if raw == float("inf") else
+             f", by {abs(png - raw) * 1000:.0f} ms/frame")
+          + ").\n     The bot takes ~200+ screenshots per level, so that is "
+          f"~{abs(png - raw) * 200:.0f}s per level.")
+
+
 def build_cfg(args) -> BotConfig:
     cfg = (BotConfig.load(args.config) if getattr(args, "config", None)
            else BotConfig())
@@ -98,7 +144,11 @@ def main(argv=None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("probe", parents=[common])
+    pr = sub.add_parser("probe", parents=[common])
+    pr.add_argument("--time", action="store_true",
+                    help="time screencap/tap/swipe round-trips and compare "
+                         "PNG vs raw capture (screenshots are ~half the "
+                         "bot's runtime)")
     sp = sub.add_parser("solve", parents=[common])
     sp.add_argument("--dry-run", action="store_true",
                     help="detect + solve + save overlay, but don't tap")
@@ -120,6 +170,8 @@ def main(argv=None) -> int:
         cv2.imwrite("probe.png", img)
         print(f"screen {w}x{h}, band {cfg.band_rect(w, h)}, "
               f"min_area {cfg.min_area(w)} -> saved probe.png")
+        if getattr(args, "time", False):
+            _time_roundtrips(adb, cfg)
         return 0
 
     if args.cmd == "solve":

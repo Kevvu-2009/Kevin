@@ -59,6 +59,25 @@ class Adb:
         return proc.stdout if binary else proc.stdout
 
     # -- public interface -------------------------------------------------
+    @staticmethod
+    def _decode_raw(raw: bytes) -> np.ndarray | None:
+        """Decode `screencap` (no -p) output: a small header of uint32s
+        (width, height, format, and on newer Android a colorspace) followed
+        by width*height*4 bytes of RGBA.  Returns None if the buffer isn't
+        a shape we recognise, so the caller can fall back to PNG."""
+        if len(raw) < 16:
+            return None
+        w, h = int(np.frombuffer(raw, np.uint32, 1, 0)[0]), \
+            int(np.frombuffer(raw, np.uint32, 1, 4)[0])
+        if not (0 < w <= 20000 and 0 < h <= 20000):
+            return None
+        body = w * h * 4
+        for header in (12, 16):                 # older / newer screencap
+            if len(raw) == header + body:
+                arr = np.frombuffer(raw, np.uint8, body, header)
+                return arr.reshape(h, w, 4)[:, :, [2, 1, 0]].copy()   # -> BGR
+        return None
+
     def screencap(self) -> np.ndarray:
         """Full-screen BGR screenshot.  BlueStacks' TCP ADB link drops
         periodically, so a failed capture triggers one reconnect attempt
@@ -66,6 +85,12 @@ class Adb:
         last_err: Exception | None = None
         for _attempt in range(self.cfg.screencap_retries):
             try:
+                if self.cfg.screencap_raw:
+                    img = self._decode_raw(
+                        self._run("exec-out", "screencap", binary=True))
+                    if img is not None:
+                        return img
+                    # unrecognised layout: fall through to the PNG path
                 raw = self._run("exec-out", "screencap", "-p", binary=True)
                 img = cv2.imdecode(np.frombuffer(raw, np.uint8),
                                    cv2.IMREAD_COLOR)
@@ -102,6 +127,27 @@ class Adb:
         self._run("shell", "input", "swipe",
                   str(int(x1)), str(int(y1)), str(int(x2)), str(int(y2)),
                   str(int(d)))
+
+    def swipe_batch(self, moves: list[tuple[float, float, float, float]],
+                    duration_ms: int | None = None) -> None:
+        """Send several swipes in ONE adb invocation.
+
+        Every `adb shell input ...` pays twice: a process spawn on the host
+        and an `input` (app_process) startup on the device - together often
+        more than the gesture itself.  Chaining the gestures into a single
+        shell command pays that overhead once instead of once per swipe.
+
+        Only safe when nothing needs to be measured between the swipes
+        (the caller gets no per-swipe feedback), so this is for blind,
+        clamp-guaranteed movement like blind_reset - never for a scroll
+        whose shift has to be registered."""
+        if not moves:
+            return
+        d = duration_ms if duration_ms is not None else self.cfg.swipe_duration_ms
+        cmd = "; ".join(
+            f"input swipe {int(x1)} {int(y1)} {int(x2)} {int(y2)} {int(d)}"
+            for x1, y1, x2, y2 in moves)
+        self._run("shell", cmd)
 
     def keyevent(self, code: int | str) -> None:
         """e.g. keyevent(4) = BACK - closes most interstitial ads safely."""
