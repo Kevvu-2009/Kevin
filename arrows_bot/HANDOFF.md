@@ -148,6 +148,59 @@ mapped).
 **NOT yet verified on device**: the oversized-arrow fix (last change; user was
 about to test it). Simulation: 20/20 boards clear with all 3 hearts.
 
+## KNOWN DEFECTS TO FIX (prioritised)
+
+### P1 — real safety gap: `play_single` is far less protected than Super Hard
+
+`play_single()` in `play.py` is what the **AFK loop uses for every normal/Hard
+level** (`afk.py`), and it still taps a **fixed solve order** with only an
+"is there ink here?" check. It does **not** have the protections that were added
+to `play_superhard` after real heart losses:
+
+- it never verifies the arrow actually **left** after a tap;
+- so a blocked tap (−1 heart) is not noticed and it **keeps tapping the rest of
+  the order — it can burn all 3 hearts on one bad board**;
+- no aim gate (`_aim_hits_target`), no miss-vs-block distinction, and no
+  re-deciding from the true remaining board.
+
+**Fix**: give `play_single` the same treatment as `play_superhard` — loop on
+`can_escape()` against a live model, verify each arrow is confirmed gone before
+removing it from the model, and stop on a genuine block. Most of the logic can be
+shared with `_try_tap` (the no-scroll case: `_fully_visible` is always true and
+`_acquire`'s scrolling is skipped). **Do not enable AFK on many levels until this
+is done** — Super Hard play is currently the *safer* path, which is backwards.
+
+### P2 — unverified on the real device
+- The **oversized-arrow fix** (latest commit) has not been run on the device yet.
+- The **AFK loop has never been run end-to-end** on the device; only `superhard`.
+- The **ad watchdog has never met a real ad** (`dismiss_ad` in `afk.py`).
+- The `"blocked"` path has never fired, so the **red-arrow rule is still unknown**.
+
+### P3 — unexplained behaviour
+- **1080x1920 makes the solve fail** (49 of 71 arrows unsolvable) even though the
+  stitch was complete. The merged-arrows hypothesis is **unconfirmed** —
+  downscaling the synthetic boards did not reproduce it. Get `dbg\ink_mask.png`
+  from a 1080 run to settle it. Until then, use 1900x3840.
+
+### P4 — dead code / small cleanups (harmless, but misleading to a reader)
+- `stitch.localize()` is **dead code** — `play.py` now calls `register()` /
+  `refine_on_canvas()` directly. Delete it.
+- `config.loc_tol_frac` is **unused** (only the dead `localize()` read it).
+- `play._report_merges(arrows, cfg, sw)` — the `sw` parameter is unused.
+- `__main__._report_board()` and `play_superhard`'s stuck-reporting duplicate each
+  other; fold them into one helper.
+- `tests/test_bot.py::test_solver_refuses_unsolvable` asserts **conditionally**
+  (`if order is not None:`), so it can pass without testing anything. Make it
+  construct a definitely-unsolvable board (e.g. two arrows pointing at each
+  other, which is already known to work) and assert `solve() is None`.
+
+### P5 — performance
+- The **stitch phase is ~3 min** before any tapping. `measure_extent()` spends
+  many swipes (coarse seek → return → creep). A cheaper extent estimate, or
+  reusing the first pass's tiles instead of re-sweeping, would cut this.
+- Play is ~5s/arrow; the remaining cost is dominated by `screencap` on a
+  1900x3840 screen (PNG-encoded on device).
+
 ## Open questions (need the user / a device run)
 
 1. **What do the RED/orange arrows do?** Normal but colored, or special (locked,
