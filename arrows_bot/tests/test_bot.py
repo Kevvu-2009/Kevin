@@ -301,6 +301,57 @@ def test_visible_implies_tappable():
     assert checked >= 3, "test did not exercise enough visible positions"
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "KNOWN BUG, root cause found, not yet fixed.  A scroll step that "
+    "saturates against the board edge mid-swipe moves only part of the way. "
+    "It is unmeasurable, AND it is far larger than alias_safe_frac*bw (400px "
+    "step vs a 124px gate at 1080 wide), so scroll()'s wide 0..expected "
+    "recovery search is skipped and it falls through to 'moved but "
+    "unmeasurable: reckon', adding the FULL intended distance to pos.  "
+    "Measured: a swipe that really travelled 161.6px advanced pos by 400, a "
+    "permanent +238px error that never self-corrects because every later "
+    "swipe correctly measures zero.  The sweep then paints tiles hundreds of "
+    "px from where they are.  Guards at the sweep level (trusting "
+    "scroll_to's return, comparing consecutive tiles, darken-blend pasting) "
+    "were all tried and NONE fix this - the fix belongs in scroll(), which "
+    "must not dead-reckon a step it cannot measure near an edge."))
+def test_sweep_stops_at_the_physical_edge():
+    """An OVER-measured extent must not tear the stitch.
+
+    measure_extent is exact offline, but on the real device (fling
+    momentum, overscroll bounce - none of which the fake models) it has
+    come back up to 27% too large on the same level.  The sweep then keeps
+    scrolling past the real edge; those tiles cannot be registered against
+    the canvas any more, so they get pasted at dead-reckoned offsets and
+    tear it.  The damage is mid-canvas, so nothing touches the border and
+    neither dropped_ink nor _clipped_arrows notices - the only symptom is
+    merged arrows and a board that will not solve.
+
+    Here the extent is inflated deliberately; the sweep must notice the
+    viewport has stopped moving and still produce a solvable board.
+    """
+    import arrows_bot.stitch as st
+    c = cfg()
+    board, truth = make_board(2400, 4000, c, seed=5)
+    fake = FakeAdb(board, c, sw=SW, sh=SH, ratio=0.965, jitter=1.0, seed=6)
+    nav = Navigator(fake, c)
+
+    real = Navigator.measure_extent
+    monkey = lambda self, axis: real(self, axis) * 1.30      # noqa: E731
+    Navigator.measure_extent = monkey
+    try:
+        res = st.capture_board(nav, c)
+    finally:
+        Navigator.measure_extent = real
+
+    arrows, labels = extract_arrows(res.canvas, c, ref_width=SW)
+    assert len(arrows) == len(truth), (
+        f"stitch is torn: {len(arrows)} components vs {len(truth)} arrows "
+        f"(merged/fragmented ink from tiles pasted past the real edge)")
+    assert solve(arrows, labels, c) is not None, \
+        "board built from an over-measured extent will not solve"
+
+
 def test_screencap_raw_decoder():
     """`screencap` without -p returns uint32 (w, h, format[, colorspace])
     then w*h*4 RGBA bytes.  Both header lengths are in the wild, and an
