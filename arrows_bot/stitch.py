@@ -194,6 +194,11 @@ class Navigator:
         self.pos = np.zeros(2, dtype=np.float64)
         self.last = img[y0:y1, x0:x1].copy()
         self.fresh = True
+        # How many swipes since the last exact anchor could NOT be measured
+        # and had to be dead-reckoned.  Zero means pos is derived from an
+        # exact anchor by measured motion only, so it is trustworthy even
+        # when there is too little ink on screen to confirm it by matching.
+        self.reckoned = 0
 
     # -- capture ----------------------------------------------------------
     def capture(self) -> np.ndarray:
@@ -293,6 +298,7 @@ class Navigator:
                 measured = (0.0, 0.0)     # ink visible, nothing changed
             else:
                 self.pos += (dx, dy)      # blank band: dead-reckon
+                self.reckoned += 1
         else:
             off = None
             if changed < self.cfg.near_static_frac:
@@ -354,6 +360,7 @@ class Navigator:
                 self.pos += measured
             else:
                 self.pos += (dx, dy)      # moved, unmeasurable: reckon
+                self.reckoned += 1
         return ScrollInfo((dx, dy), measured, changed, moving)
 
     # -- higher level ----------------------------------------------------------
@@ -488,6 +495,7 @@ class Navigator:
             self.adb.sleep(self.cfg.swipe_settle_s)
         self.capture()
         self.pos = np.zeros(2, dtype=np.float64)
+        self.reckoned = 0            # corner clamp: pos is exact again
 
     def calibrate_ratio(self) -> float:
         """Measure content-px per swipe-px with a down+up scroll pair."""

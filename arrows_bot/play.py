@@ -451,7 +451,16 @@ def _acquire(nav, ref: np.ndarray, cfg: BotConfig, a: Arrow,
                 # through the aim gate and costs a heart.  _locate_arrow has
                 # just re-anchored pos from its match, so re-check it here:
                 # if the match was honest this now confirms cheaply.
-                if confirmed or _pos_confirmed(nav, ref, cfg):
+                # Trustworthy by construction: blind_reset drives into the
+                # corner against the scroll clamp, so pos is EXACT there,
+                # and if every swipe since was measured then pos is still
+                # exact.  This is the endgame case - once only a few arrows
+                # remain there is too little ink left to confirm anything by
+                # matching, so demanding a match would strand the last
+                # arrows on every board.  A dead-reckoned swipe in between
+                # voids it: that is precisely when pos becomes a guess.
+                exact = did_reset and nav.reckoned == 0
+                if confirmed or exact or _pos_confirmed(nav, ref, cfg):
                     return sx, sy
                 continue            # unverifiable: defer.  A skip is free.
             # found near the border: pos was re-anchored, loop re-centers
@@ -473,6 +482,7 @@ def _pos_confirmed(nav, ref: np.ndarray, cfg: BotConfig) -> bool:
                        min_valid=2, min_frac_valid=0.6)
     if off is not None:
         nav.pos = np.array(off)
+        nav.reckoned = 0            # re-anchored against real ink
     return off is not None
 
 
