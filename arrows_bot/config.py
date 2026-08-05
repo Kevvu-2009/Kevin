@@ -52,27 +52,35 @@ class BotConfig:
     corridor_width_factor: float = 1.2
 
     # ---- swipes / scrolling -------------------------------------------
-    swipe_duration_ms: int = 300    # deliberate drag: no fling, and (with
+    swipe_duration_ms: int = 800    # deliberate drag: no fling, and (with
                                     # min_swipe_frac) never read as a tap.
                                     # Tap-vs-scroll is decided by DISTANCE,
-                                    # not duration, so this only needs to be
-                                    # slow enough not to FLING.  It is paid
-                                    # on every single swipe and swipes
-                                    # dominate runtime, so it is the biggest
-                                    # single speed knob here.  RAISE it (600,
-                                    # 800) if BlueStacks starts flinging or
-                                    # overshooting - the symptom is scrolls
-                                    # measuring much larger than intended.
+                                    # not duration, so in principle this only
+                                    # has to be slow enough not to FLING -
+                                    # but MEASURED ON DEVICE, 300ms DOES
+                                    # fling: the same Super Hard level
+                                    # stitched cleanly at 800ms (solver OK)
+                                    # and came back with 45 of 61 arrows
+                                    # unsolvable at 300ms.  The corrupted
+                                    # tiles land mid-canvas, so the stitch
+                                    # still looks complete and nothing trips
+                                    # the clipped-arrow check - it just
+                                    # blocks corridors everywhere.
+                                    # DO NOT LOWER without re-running
+                                    # `stitch` on a Super Hard level and
+                                    # confirming the solver still says OK.
     min_swipe_frac: float = 0.05    # shortest finger travel = frac * band
                                     # width; below OS touch-slop a swipe is
                                     # read as a TAP (flies an arrow, -1 heart)
     swipe_margin_frac: float = 0.06 # keep swipe endpoints inside the band
-    swipe_settle_s: float = 0.12    # wait after a swipe before screencap.
-                                    # Also paid on every swipe; too low just
-                                    # means a blurred/mid-scroll frame, which
-                                    # registration REJECTS (costing a retry),
-                                    # so it fails safe - raise it if scrolls
-                                    # often come back unmeasurable.
+    swipe_settle_s: float = 0.25    # wait after a swipe before screencap.
+                                    # Reverted from 0.12 alongside
+                                    # swipe_duration_ms: a frame grabbed
+                                    # while the view is still gliding
+                                    # registers at the WRONG offset rather
+                                    # than failing to register, so it
+                                    # corrupts the stitch silently instead
+                                    # of failing safe.
     scroll_step_frac: float = 0.60  # scroll step = frac * band dimension
     swipe_ratio: float = 1.0        # measured content-px per swipe-px
                                     # (auto-calibrated at runtime)
