@@ -184,7 +184,8 @@ def play_superhard(adb: Adb, cfg: BotConfig,
 
         progressed = False
         for a in free:
-            res = _try_tap(nav, adb, cfg, a, w_max, h_max, ref, step)
+            res = _try_tap(nav, adb, cfg, a, w_max, h_max, ref, step,
+                           n_remaining=len(remaining))
             if res == "ok":
                 _erase(ref, labels, a)          # whiten image (orig labels)
                 remove_arrow(a, work)           # remove from live model
@@ -221,7 +222,8 @@ def play_superhard(adb: Adb, cfg: BotConfig,
 
 
 def _try_tap(nav, adb: Adb, cfg: BotConfig, a: Arrow, w_max: float,
-             h_max: float, ref: np.ndarray, step: int) -> str:
+             h_max: float, ref: np.ndarray, step: int,
+             n_remaining: int = 0) -> str:
     """Localize, aim-gate, tap, and verify one free arrow.  Returns:
         "ok"      - the arrow is confirmed gone
         "skip"    - couldn't confidently localize/aim (defer, costs nothing)
@@ -232,7 +234,8 @@ def _try_tap(nav, adb: Adb, cfg: BotConfig, a: Arrow, w_max: float,
     and try once more.  If it's exactly where we tapped, it's genuinely
     blocked - report without a second heart-costing tap."""
     bx0, by0, _, _ = nav.band
-    got = _acquire(nav, ref, cfg, a, w_max, h_max)
+    got = _acquire(nav, ref, cfg, a, w_max, h_max,
+                   n_remaining=n_remaining)
     if got is None:
         _save_debug(cfg, f"skip_{step:03d}.png", nav.last)
         return "skip"
@@ -251,7 +254,8 @@ def _try_tap(nav, adb: Adb, cfg: BotConfig, a: Arrow, w_max: float,
             return "ok"
         if _ink_frac_at(nav.capture(), sx, sy, r, cfg) < 0.15:
             return "ok"
-        got2 = _acquire(nav, ref, cfg, a, w_max, h_max)   # miss or block?
+        got2 = _acquire(nav, ref, cfg, a, w_max, h_max,   # miss or block?
+                        n_remaining=n_remaining)
         if got2 is None:
             return "skip"
         sx2, sy2 = got2
@@ -393,7 +397,8 @@ def _erase(ref: np.ndarray, labels: np.ndarray, a: Arrow) -> None:
 
 def _acquire(nav, ref: np.ndarray, cfg: BotConfig, a: Arrow,
              w_max: float, h_max: float,
-             attempts: int = 3) -> tuple[int, int] | None:
+             attempts: int = 3,
+             n_remaining: int = 0) -> tuple[int, int] | None:
     """Scroll the arrow into the safe band and return VERIFIED screen-band
     coordinates of its tap point, or None if it truly isn't there.
 
@@ -408,6 +413,14 @@ def _acquire(nav, ref: np.ndarray, cfg: BotConfig, a: Arrow,
     accumulate across taps."""
     hx, hy = a.tap_point
     did_reset = False
+    # With ONE arrow left on the board there is nothing on it to mistake for
+    # the target, so the twin problem - the only thing the viewport
+    # confirmation and the peak-distance gate exist to solve - cannot arise.
+    # A strong template match with a verified head must BE that arrow.  This
+    # matters because the last arrow is exactly when the board is emptiest
+    # and confirmation is least possible: measured, the endgame stranded the
+    # final arrow on 3 of 5 boards, turning a cleared level into a near-miss.
+    alone = n_remaining == 1
     for _attempt in range(attempts):
         # Only scroll when the arrow isn't already comfortably on screen.
         # Re-centering every arrow is what made play crawl: each swipe
@@ -436,7 +449,7 @@ def _acquire(nav, ref: np.ndarray, cfg: BotConfig, a: Arrow,
                 return sx, sy
             continue
 
-        got = _locate_arrow(nav, ref, a, cfg)
+        got = _locate_arrow(nav, ref, a, cfg, unambiguous=alone)
         if got is not None:
             sx, sy = got
             if 2 <= sx < nav.bw - 2 and 2 <= sy < nav.bh - 2:
@@ -460,7 +473,8 @@ def _acquire(nav, ref: np.ndarray, cfg: BotConfig, a: Arrow,
                 # arrows on every board.  A dead-reckoned swipe in between
                 # voids it: that is precisely when pos becomes a guess.
                 exact = did_reset and nav.reckoned == 0
-                if confirmed or exact or _pos_confirmed(nav, ref, cfg):
+                if confirmed or exact or alone \
+                        or _pos_confirmed(nav, ref, cfg):
                     return sx, sy
                 continue            # unverifiable: defer.  A skip is free.
             # found near the border: pos was re-anchored, loop re-centers
@@ -486,8 +500,8 @@ def _pos_confirmed(nav, ref: np.ndarray, cfg: BotConfig) -> bool:
     return off is not None
 
 
-def _locate_arrow(nav, ref: np.ndarray, a: Arrow,
-                  cfg: BotConfig) -> tuple[int, int] | None:
+def _locate_arrow(nav, ref: np.ndarray, a: Arrow, cfg: BotConfig,
+                  unambiguous: bool = False) -> tuple[int, int] | None:
     """Template-match the arrow (with surrounding context) from the ref
     canvas against the WHOLE live band, then accept only a strong peak
     close to the dead-reckoned position.  On a repetitive board several
@@ -530,8 +544,13 @@ def _locate_arrow(nav, ref: np.ndarray, a: Arrow,
     ex = x0 - nav.pos[0]                  # expected template position
     ey = y0 - nav.pos[1]
     loc = min(peaks, key=lambda p: (p[0] - ex) ** 2 + (p[1] - ey) ** 2)
+    # The distance gate disambiguates identical copies.  When the caller
+    # guarantees there is nothing to confuse the target with (one arrow
+    # left on the board), it only rejects good matches whose position
+    # drifted - the head check below is the real identity test.
     gate = max(48.0, 0.06 * nav.bw)
-    if ((loc[0] - ex) ** 2 + (loc[1] - ey) ** 2) ** 0.5 > gate:
+    if (not unambiguous
+            and ((loc[0] - ex) ** 2 + (loc[1] - ey) ** 2) ** 0.5 > gate):
         return None                       # nearest copy is too far to trust
 
     sx = loc[0] + a.tap_point[0] - x0
