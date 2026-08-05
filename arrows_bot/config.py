@@ -81,7 +81,20 @@ class BotConfig:
                                     # than failing to register, so it
                                     # corrupts the stitch silently instead
                                     # of failing safe.
-    scroll_step_frac: float = 0.60  # scroll step = frac * band dimension
+    scroll_step_frac: float = 0.25  # scroll step = frac * band dimension.
+                                    # SMALL ON PURPOSE.  A scroll view is
+                                    # inertial, and a long fast swipe flings
+                                    # hardest - the resulting position error
+                                    # then costs far more in re-localization
+                                    # and blind_reset than the bigger step
+                                    # ever saved.  Measured on an 80-arrow
+                                    # board with 15% fling: 0.60 -> 1/5
+                                    # levels cleared, 84% of arrows, 2 hearts
+                                    # lost, 5421 swipes; 0.25 -> 4/5 levels,
+                                    # 100% of arrows, 0 hearts, 1596 swipes.
+                                    # Smaller is better on every axis
+                                    # (completion, hearts AND speed), so
+                                    # raise it only with a measurement.
     swipe_ratio: float = 1.0        # measured content-px per swipe-px
                                     # (auto-calibrated at runtime)
 
