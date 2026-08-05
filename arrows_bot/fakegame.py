@@ -112,7 +112,7 @@ def make_board(bw: int, bh: int, cfg: BotConfig, seed: int = 1,
 class FakeAdb:
     def __init__(self, board: np.ndarray, cfg: BotConfig,
                  sw: int = 1080, sh: int = 1920, ratio: float = 0.965,
-                 jitter: float = 1.0, seed: int = 0):
+                 jitter: float = 1.0, seed: int = 0, fling: float = 0.0):
         assert board.shape[0] >= sh and board.shape[1] >= sw
         self.board = board.copy()
         self.cfg = cfg
@@ -122,6 +122,13 @@ class FakeAdb:
         self.sw, self.sh = sw, sh
         self.ratio = ratio
         self.jitter = jitter
+        # Inertial scrolling: a real scroll view carries on past the end of
+        # the gesture.  Modelling this is what separates "passes offline"
+        # from "works on the device" - a 300ms swipe on BlueStacks flung far
+        # enough to corrupt the stitch, while the simulation (which had no
+        # fling at all) happily reported everything was fine.  Expressed as
+        # extra travel as a fraction of the intended distance.
+        self.fling = fling
         self.tap_slop = 20.0            # OS tap-vs-scroll threshold (px)
         self.rng = np.random.default_rng(seed)
         self.vx = (board.shape[1] - sw) / 2.0
@@ -160,8 +167,10 @@ class FakeAdb:
         if ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5 < self.tap_slop:
             self.tap((x1 + x2) / 2 - self.vx, (y1 + y2) / 2 - self.vy)
             return
-        dx = (x1 - x2) * self.ratio + self.rng.normal(0, self.jitter)
-        dy = (y1 - y2) * self.ratio + self.rng.normal(0, self.jitter)
+        # fling varies per gesture: momentum is not reproducible in practice
+        f = 1.0 + self.fling * float(self.rng.uniform(0.5, 1.5))
+        dx = (x1 - x2) * self.ratio * f + self.rng.normal(0, self.jitter)
+        dy = (y1 - y2) * self.ratio * f + self.rng.normal(0, self.jitter)
         self.vx = float(np.clip(self.vx + dx, 0, self.board.shape[1] - self.sw))
         self.vy = float(np.clip(self.vy + dy, 0, self.board.shape[0] - self.sh))
 

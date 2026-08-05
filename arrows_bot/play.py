@@ -153,12 +153,32 @@ def play_superhard(adb: Adb, cfg: BotConfig,
             _save_debug(cfg, "board_stuck.png",
                         draw_overlay(canvas, [by_id[i] for i in remaining], None))
             return False
-        # Clear everything reachable without scrolling first, then take the
-        # nearest of the rest: scrolling dominates the runtime, so this cuts
-        # it to roughly one scroll per screenful instead of one per arrow.
+        # Clear everything reachable without scrolling first (scrolling
+        # dominates runtime, so this is ~one scroll per screenful rather
+        # than one per arrow).  But when we DO have to move, go where the
+        # ink is, not merely to the nearest arrow.
+        #
+        # The bot locates itself by matching ink between the live screen and
+        # the stitched board, so every arrow it clears removes some of the
+        # evidence it needs.  Nearest-first empties one neighbourhood at a
+        # time and then creeps along its own blank trail: measured, viewport
+        # confirmation went from 100% (13-20 agreeing patches) while the
+        # board was full to 40% (1.5 patches) once it had been hollowed out,
+        # and a failed confirmation is exactly what surfaces as "couldn't
+        # localize any of N free arrows".  Preferring a destination that
+        # still has neighbours keeps landmarks on screen; the board then
+        # thins out roughly evenly instead of developing a hole.
         ref_xy = last if last is not None else (nav.pos[0] + nav.bw / 2,
                                                 nav.pos[1] + nav.bh / 2)
+        near2 = (0.5 * min(nav.bw, nav.bh)) ** 2
+
+        def _company(a: Arrow) -> int:
+            return sum(1 for i in remaining
+                       if (by_id[i].head[0] - a.head[0]) ** 2
+                       + (by_id[i].head[1] - a.head[1]) ** 2 <= near2)
+
         free.sort(key=lambda a: (not _fully_visible(nav, a),
+                                 -_company(a),
                                  (a.head[0] - ref_xy[0]) ** 2
                                  + (a.head[1] - ref_xy[1]) ** 2))
 

@@ -352,6 +352,65 @@ def test_sweep_stops_at_the_physical_edge():
         "board built from an over-measured extent will not solve"
 
 
+def test_saturating_swipe_is_measured_not_reckoned():
+    """A swipe that hits the board edge MID-GESTURE travels less than asked.
+    Its real shift must be MEASURED; dead-reckoning the full intended
+    distance injects a permanent position error.
+
+    This was the bug behind stitched extents differing by 27% between runs
+    of the same level (and the torn canvases that followed): the recovery
+    search for partially-travelled swipes was gated to steps <=
+    alias_safe_frac*bw (124px here), while real scroll steps are ~400px, so
+    it never ran for the swipes that need it.  Measured before the fix: a
+    swipe that truly travelled 161.6px advanced pos by the full 400.
+    """
+    c = cfg()
+    board, _ = make_board(2400, 4000, c, seed=5)
+    fake = FakeAdb(board, c, sw=SW, sh=SH, ratio=0.965, jitter=1.0, seed=6)
+    nav = Navigator(fake, c)
+    nav.capture()
+    nav.seek_edge("U")
+    nav.seek_edge("L")
+    nav.snap(0, 0.0)
+    nav.snap(1, 0.0)
+
+    step = 400.0
+    saturated = worst = 0.0
+    for _ in range(9):                       # walk right, into the edge
+        before = fake.vx
+        nav.scroll(step, 0.0)
+        real = fake.vx - before
+        if 5.0 < real < 0.9 * step:          # the partial step
+            saturated = real
+        worst = max(worst, abs(nav.pos[0] - fake.vx))
+
+    assert saturated, "test never produced a partially-saturating swipe"
+    assert worst < 30.0, (
+        f"pos drifted {worst:.0f}px from the true viewport - a swipe that "
+        f"only travelled {saturated:.0f}px of {step:.0f} was dead-reckoned "
+        f"at its full intended distance")
+
+
+def test_play_survives_inertial_scrolling():
+    """End-to-end with FLING enabled: a real scroll view carries on past
+    the end of the gesture, so a swipe can travel FURTHER than asked.
+
+    The simulation had no fling at all, which is exactly why the bot passed
+    every offline test and still tore its stitch on the device.  With fling
+    modelled, the shift lands outside both the expected-offset window and a
+    recovery window that only covered undershoot - so it was unmeasurable
+    and every scroll under-counted.  Hearts matter most here: before the
+    fix this board lost one to a wrong-arrow tap.
+    """
+    c = cfg()
+    board, truth = make_board(2400, 4000, c, seed=7)
+    fake = FakeAdb(board, c, sw=SW, sh=SH, ratio=0.965, jitter=1.0, seed=8,
+                   fling=0.10)
+    ok = play_superhard(fake, c)
+    assert fake.hearts == 3, "a wrong tap cost a heart under inertial scroll"
+    assert ok, f"only cleared {fake.cleared}/{len(truth)} with fling"
+
+
 def test_screencap_raw_decoder():
     """`screencap` without -p returns uint32 (w, h, format[, colorspace])
     then w*h*4 RGBA bytes.  Both header lengths are in the wild, and an

@@ -47,6 +47,12 @@ from .config import BotConfig
 
 AXIS = {"U": (0, -1), "D": (0, 1), "L": (-1, 0), "R": (1, 0)}
 
+# Largest overshoot a single swipe is assumed capable of, as a multiple of
+# the intended distance.  Inertial ("fling") scrolling carries the view past
+# the end of the gesture, so a swipe can travel further than asked; the
+# saturation recovery search has to cover that as well as stopping short.
+OVERSHOOT_MAX = 1.6
+
 
 # ---------------------------------------------------------------------------
 # low-level image measurements
@@ -303,14 +309,46 @@ class Navigator:
             if off is None:
                 off, n = register(prev, new, exp, self._tol, self.cfg,
                                   self._patch)
-            if off is None and max(abs(dx), abs(dy)) <= self.alias_safe:
-                # a small step that may have saturated (edge hit):
-                # searching the whole 0..expected range is safe here, the
-                # window being smaller than any board repeat period
-                tol2 = (int(abs(dx) / 2) + self._tol,
-                        int(abs(dy) / 2) + self._tol)
-                off, n = register(prev, new, exp / 2, tol2, self.cfg,
-                                  self._patch, min_valid=3)
+            if off is None:
+                # The swipe SATURATED against an edge mid-gesture: it moved,
+                # but less than asked, so it matches neither offset 0 nor the
+                # expected offset.  Search the whole 0..intended range.
+                #
+                # This used to be attempted only for steps <= alias_safe, on
+                # the grounds that a wider window could alias onto a periodic
+                # copy.  But real scroll steps are ~5x that gate (400px vs
+                # 124px at 1080 wide), so the recovery never ran for the
+                # swipes that actually need it, and control fell through to
+                # dead-reckoning the FULL intended distance - measured, a
+                # swipe that truly travelled 161.6px advanced pos by 400,
+                # a permanent +238px error that never self-corrects (every
+                # later swipe against the edge correctly measures zero).
+                # That is what made stitched extents differ by 27% between
+                # runs of the same level and tore the canvas.
+                #
+                # Aliasing is instead handled the way the rest of this module
+                # handles it: when the window is too wide to be alias-safe,
+                # demand a SUPERMAJORITY of the visible regions to agree.  A
+                # shift to a periodic copy satisfies the target's twin but
+                # not the twin's differing neighbours.
+                # The window spans 0 .. OVERSHOOT_MAX * intended, not just
+                # 0 .. intended: a scroll view is inertial, so a gesture can
+                # carry PAST what was asked as easily as it can stop short of
+                # it against an edge.  A window that only covered undershoot
+                # left every flung swipe unmeasurable, and dead-reckoning
+                # then under-counted the travel on every single scroll.
+                # Window spans travel of 0 .. OVERSHOOT_MAX * intended:
+                # centred at half of OVERSHOOT_MAX, with a half-width to
+                # match, so a swipe that barely moved at all (heavy
+                # saturation) and one that flung well past the request are
+                # both inside it.
+                wide = max(abs(dx), abs(dy)) > self.alias_safe
+                mid = OVERSHOOT_MAX / 2.0
+                tol2 = (int(mid * abs(dx)) + self._tol,
+                        int(mid * abs(dy)) + self._tol)
+                off, n = register(prev, new, exp * mid, tol2, self.cfg,
+                                  self._patch, min_valid=3,
+                                  min_frac_valid=0.6 if wide else 0.0)
             if off is not None:
                 measured = (-float(off[0]), -float(off[1]))
                 self.pos += measured
