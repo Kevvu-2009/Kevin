@@ -302,19 +302,19 @@ def test_visible_implies_tappable():
 
 
 @pytest.mark.xfail(strict=True, reason=(
-    "KNOWN BUG, root cause found, not yet fixed.  A scroll step that "
-    "saturates against the board edge mid-swipe moves only part of the way. "
-    "It is unmeasurable, AND it is far larger than alias_safe_frac*bw (400px "
-    "step vs a 124px gate at 1080 wide), so scroll()'s wide 0..expected "
-    "recovery search is skipped and it falls through to 'moved but "
-    "unmeasurable: reckon', adding the FULL intended distance to pos.  "
-    "Measured: a swipe that really travelled 161.6px advanced pos by 400, a "
-    "permanent +238px error that never self-corrects because every later "
-    "swipe correctly measures zero.  The sweep then paints tiles hundreds of "
-    "px from where they are.  Guards at the sweep level (trusting "
-    "scroll_to's return, comparing consecutive tiles, darken-blend pasting) "
-    "were all tried and NONE fix this - the fix belongs in scroll(), which "
-    "must not dead-reckon a step it cannot measure near an edge."))
+    "The CAUSE of over-measured extents is fixed (scroll() no longer "
+    "dead-reckons a swipe that saturates or flings - see "
+    "test_saturating_swipe_is_measured_not_reckoned), so this condition is "
+    "now PREVENTED rather than tolerated.  This test forces it anyway, by "
+    "inflating measure_extent's result 30%, and the sweep is still not "
+    "robust to being handed a wrong extent: it paints tiles past the real "
+    "edge at dead-reckoned offsets and tears the canvas.  Kept as a "
+    "standing record of that remaining robustness gap.  Sweep-level guards tried and "
+    "rejected, so they are not repeated: trusting scroll_to's return value "
+    "(it reports success, since the inflated pos makes it believe it "
+    "arrived), comparing consecutive tiles per row and across rows, and "
+    "darken-blend pasting (turns erasure into ghost duplicates, 119 -> 133 "
+    "components).  All left the count at exactly 119 vs 82."))
 def test_sweep_stops_at_the_physical_edge():
     """An OVER-measured extent must not tear the stitch.
 
