@@ -417,16 +417,7 @@ def _acquire(nav, ref: np.ndarray, cfg: BotConfig, a: Arrow,
             nav.scroll_to(1, float(np.clip(hy - nav.bh / 2, 0, h_max)))
             nav.scroll_to(0, float(np.clip(hx - nav.bw / 2, 0, w_max)))
         nav.capture_if_stale()      # reuse the post-tap frame when unmoved
-        # confirm pos against the ref canvas.  The supermajority demand
-        # (min_frac_valid) is what makes this a real identity check: with
-        # pos off by a whole board period, the target's twin still
-        # matches, but its DIFFERING neighbours don't.
-        off, n = register(nav.last, ref, expected=nav.pos.copy(),
-                          tol=nav._tol, cfg=cfg, patch=nav._patch,
-                          min_valid=2, min_frac_valid=0.6)
-        confirmed = off is not None
-        if confirmed:
-            nav.pos = np.array(off)
+        confirmed = _pos_confirmed(nav, ref, cfg)
         if not (confirmed or did_reset):
             # position cannot be vouched for and might be off by exactly
             # one period (identical twins would fool the peak gate!).
@@ -449,12 +440,40 @@ def _acquire(nav, ref: np.ndarray, cfg: BotConfig, a: Arrow,
         if got is not None:
             sx, sy = got
             if 2 <= sx < nav.bw - 2 and 2 <= sy < nav.bh - 2:
-                return sx, sy
+                # NEVER tap on an unconfirmed viewport.  _locate_arrow
+                # matches the arrow's own template, which cannot tell the
+                # target from an identical twin - that is the viewport
+                # confirmation's job.  After a blind_reset this loop used to
+                # fall straight through to here with `confirmed` still
+                # False, so a position that was wrong (e.g. drifted by a
+                # flung swipe) put the finger on a DIFFERENT arrow that
+                # happened to share a direction and size, which sails
+                # through the aim gate and costs a heart.  _locate_arrow has
+                # just re-anchored pos from its match, so re-check it here:
+                # if the match was honest this now confirms cheaply.
+                if confirmed or _pos_confirmed(nav, ref, cfg):
+                    return sx, sy
+                continue            # unverifiable: defer.  A skip is free.
             # found near the border: pos was re-anchored, loop re-centers
         elif not did_reset:
             nav.blind_reset(w_max, h_max)
             did_reset = True
     return None
+
+
+def _pos_confirmed(nav, ref: np.ndarray, cfg: BotConfig) -> bool:
+    """Confirm nav.pos against the ref canvas, re-anchoring it on success.
+
+    The supermajority demand (min_frac_valid) is what makes this a real
+    identity check rather than a similarity check: with pos off by a whole
+    board period the target's twin still matches, but the twin's DIFFERING
+    neighbours do not, so most visible regions disagree."""
+    off, _n = register(nav.last, ref, expected=nav.pos.copy(),
+                       tol=nav._tol, cfg=cfg, patch=nav._patch,
+                       min_valid=2, min_frac_valid=0.6)
+    if off is not None:
+        nav.pos = np.array(off)
+    return off is not None
 
 
 def _locate_arrow(nav, ref: np.ndarray, a: Arrow,
