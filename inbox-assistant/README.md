@@ -6,9 +6,10 @@ in the customer's language using **only** the business's own information. Replie
 **drafts** for the owner to check and send. Anything unclear is **flagged** for the owner instead
 of guessed at.
 
-> **Status: Milestone 1 of 9.** The project skeleton works end to end on sample emails stored as
-> files. The AI is **not connected yet** (simple keyword rules stand in for it), the skip filters
-> are not active, and it cannot read a real mailbox yet. See [Roadmap](#roadmap).
+> **Status: Milestone 2 of 9.** Works end to end on sample emails stored as files, including the
+> filters that skip newsletters, auto-replies and no-reply senders. The AI is **not connected
+> yet** (simple keyword rules stand in for it), and it cannot read a real mailbox yet.
+> See [Roadmap](#roadmap).
 
 ---
 
@@ -85,6 +86,7 @@ Each business has its own folder under `clients/`. Copy `clients/demo-cottage` t
 | `drafts_folder` / `sent_folder` | Mailbox folder names. Gmail: `[Gmail]/Drafts` and `[Gmail]/Sent Mail`. |
 | `quote_required_fields` | What the reply asks for when someone wants a quote |
 | `booking_link` | Where customers are sent to book. The assistant never confirms bookings itself. |
+| `own_addresses` | The business's own email addresses and aliases (e.g. `info@`, `bookings@`). Mail from these is never answered. Your `EMAIL_USER` is always included. |
 | `min_confidence` | 0–1. If the AI is less sure than this, the email is flagged for the owner. Default 0.7. |
 | `signature` | Added to the end of every reply |
 | `models` | Which Claude models classify and write replies |
@@ -101,15 +103,16 @@ says the owner will follow up and the email is flagged. Keep it short, factual a
 | A complaint, or anything else ("other") | Flagged for the owner, no reply |
 | Something the AI is unsure about | Flagged for the owner, no reply |
 | Spam | Ignored (logged only) |
-| Newsletter, no-reply sender, auto-reply, or a thread the bot already answered | Skipped before any AI call *(Milestone 2)* |
+| Newsletter / mailing list, no-reply or mailer-daemon sender, auto-reply or out-of-office, bounce, or mail from the business itself | Skipped before any AI call (left unread for the owner) |
+| A thread the bot already answered, or a sender it answered in the last 24 hours | Skipped (left unread for the owner) |
 
 Safety rules:
 
 - Email content is treated as untrusted. The AI is told to ignore any instructions inside an
   email, and it can only produce text. It cannot trigger actions.
 - It never invents prices, availability or policies, and never confirms bookings or payments.
-- At most one bot reply per thread and one per sender per 24 hours, to prevent bot-to-bot loops
-  *(Milestones 2 and 5)*.
+- At most one bot reply per thread and one per sender per 24 hours, to prevent bot-to-bot loops.
+  Saved drafts count as replies. *(Until Milestone 5 this memory only lasts for one run.)*
 - `--dry-run` never writes to the mailbox.
 - Email bodies are never stored; the log keeps only metadata.
 
@@ -122,7 +125,7 @@ src/inbox_assistant/
   models.py        shared data types
   pipeline.py      per-email steps: filter → classify → decide → reply → deliver → log
   mail_client.py   reading .eml / IMAP, building threaded replies, dry-run mailbox
-  filters.py       skip rules applied before any AI call        (Milestone 2)
+  filters.py       skip rules applied before any AI call
   classifier.py    sorts emails; validates AI JSON output        (AI: Milestone 3)
   responder.py     writes replies from knowledge.md              (AI: Milestone 3)
   store.py         processed messages + action log               (SQLite: Milestone 5)
@@ -135,7 +138,7 @@ tests/                  automated tests; tests/fixtures/ has the sample emails
 ## Roadmap
 
 1. ✅ Skeleton: config, CLI, dry-run over `.eml` files, stubbed AI
-2. Skip filters (no-reply, auto-replies, mailing lists, loop protection)
+2. ✅ Skip filters (no-reply, auto-replies, mailing lists, loop protection)
 3. Real AI classifier and reply writer (Anthropic API)
 4. Read a real inbox over IMAP and save drafts to it
 5. SQLite state: never process twice, per-thread/per-sender limits, action log

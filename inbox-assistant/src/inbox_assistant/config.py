@@ -33,6 +33,8 @@ class ClientConfig(BaseModel):
     sent_folder: str = "Sent"
     quote_required_fields: list[str] = Field(default_factory=list)
     booking_link: str = ""
+    # The business's own addresses and aliases; mail from these is never answered.
+    own_addresses: list[str] = Field(default_factory=list)
     signature: str = ""
     # Classifications below this confidence are treated as needs_human.
     min_confidence: float = Field(default=0.7, ge=0.0, le=1.0)
@@ -49,6 +51,17 @@ class ClientConfig(BaseModel):
             if not re.fullmatch(r"[a-z]{2,3}", code):
                 raise ValueError(f"'{lang}' is not an ISO language code like 'fi' or 'en'")
             out.append(code)
+        return out
+
+    @field_validator("own_addresses")
+    @classmethod
+    def _normalise_addresses(cls, value: list[str]) -> list[str]:
+        out = []
+        for addr in value:
+            addr = str(addr).strip().lower()
+            if "@" not in addr:
+                raise ValueError(f"'{addr}' is not an email address")
+            out.append(addr)
         return out
 
     @model_validator(mode="after")

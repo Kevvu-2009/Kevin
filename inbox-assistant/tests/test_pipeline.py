@@ -113,7 +113,7 @@ def make_pipeline(client, mailbox, classifier=None, responder=None) -> Pipeline:
         classifier=classifier or StubClassifier(),
         responder=responder or StubResponder(),
         store=MemoryStore(),
-        own_addresses=frozenset(),
+        own_addresses=frozenset(client.config.own_addresses),
         from_addr="info@lakeside-demo.example",
     )
 
@@ -135,6 +135,19 @@ def test_dry_run_over_fixtures_never_writes(demo_client):
     assert by_file["02_quote_request_fi.eml"].action is Action.DRAFT
     assert by_file["02_quote_request_fi.eml"].reply_language == "fi"
     assert by_file["05_question_de.eml"].reply_language == "en"
+    for machine in (
+        "06_newsletter.eml",
+        "07_noreply_notification.eml",
+        "08_autoreply_fi.eml",
+        "11_bounce.eml",
+        "12_outlook_ooo_en.eml",
+        "13_own_address.eml",
+    ):
+        assert by_file[machine].action is Action.SKIP, machine
+        assert by_file[machine].classification is None  # no AI call was made
+    # loop protection within one run: Emily's follow-up and Matti's second email
+    assert by_file["10_thread_reply_en.eml"].reason == "bot already replied in this thread"
+    assert "last 24 hours" in by_file["14_second_email_same_sender_fi.eml"].reason
 
     drafts = [p for p in mailbox.planned if p.kind == "draft"]
     assert all(p.target == "Drafts" for p in drafts)

@@ -126,7 +126,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 2
     mailbox = DryRunMailbox(source)
 
-    own = {secrets.email_user.lower()} if secrets.email_user else set()
+    own = set(client.config.own_addresses)
+    if secrets.email_user:
+        own.add(secrets.email_user.lower())
     pipeline = Pipeline(
         client=client,
         mailbox=mailbox,
@@ -141,10 +143,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         f"DRY RUN for '{client.config.business_name}' — reading {eml_dir}/ — nothing will be "
         "written to any mailbox."
     )
-    print(
-        "Milestone 1: AI calls are STUBBED (keyword rules + template replies), and the skip "
-        "filters\n(newsletters, no-reply, auto-replies) are not active until Milestone 2.\n"
-    )
+    print("AI calls are STUBBED until Milestone 3 (keyword rules + template replies).\n")
     outcomes = pipeline.run()
     for outcome in outcomes:
         print(format_outcome(outcome, dry_run=True))

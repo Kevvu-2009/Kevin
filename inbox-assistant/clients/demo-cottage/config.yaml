@@ -7,6 +7,7 @@ drafts_folder: "Drafts"          # Gmail: "[Gmail]/Drafts"
 sent_folder: "Sent"              # Gmail: "[Gmail]/Sent Mail"
 quote_required_fields: [arrival date, departure date, number of guests, pets]
 booking_link: "https://example.com/book"
+own_addresses: [info@lakeside-demo.example]   # the business's addresses; never answered
 min_confidence: 0.7              # below this, the email is flagged for the owner instead
 signature: |
   Best regards,

@@ -91,6 +91,11 @@ class Action(StrEnum):
     ERROR = "error"  # something went wrong with this email; owner should look
 
 
+# Actions that count as "the bot replied" for the per-thread and per-sender limits.
+# Drafts count too: the owner is expected to send them.
+REPLIED_ACTIONS: frozenset[Action] = frozenset({Action.DRAFT, Action.DRAFT_AND_FLAG, Action.SEND})
+
+
 @dataclass
 class Outcome:
     """What happened (or would happen in dry-run) to one email."""

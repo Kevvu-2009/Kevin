@@ -127,7 +127,7 @@ supporting it will need OAuth (later milestone). Start with a test Gmail account
 
 1. Skeleton: project structure, config loading, CLI with `--dry-run` that reads local `.eml`
    fixtures instead of a real inbox. Stub AI calls. **(done)**
-2. Filters + pytest tests using the fixtures (no network in tests).
+2. Filters + pytest tests using the fixtures (no network in tests). **(done)**
 3. AI classifier + responder wired to the Anthropic API, run in dry-run over fixtures, printing
    category and draft reply for each.
 4. IMAP read + draft APPEND against a test mailbox. Verify drafts thread correctly.

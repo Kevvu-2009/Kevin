@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection
-from dataclasses import dataclass
+from collections.abc import Callable, Collection
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 from inbox_assistant import filters
 from inbox_assistant.classifier import Classifier
@@ -60,6 +61,7 @@ class Pipeline:
     store: MemoryStore
     own_addresses: frozenset[str]
     from_addr: str = ""
+    clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
 
     def run(self) -> list[Outcome]:
         outcomes = []
@@ -78,7 +80,7 @@ class Pipeline:
         if self.store.is_processed(email.uid, email.message_id):
             return None
 
-        skip = filters.skip_reason(email, self.own_addresses)
+        skip = filters.skip_reason(email, self.own_addresses, self.store, self.clock())
         if skip:
             return self._finish(Outcome(email, raw.uid, Action.SKIP, reason=skip))
 
@@ -134,5 +136,5 @@ class Pipeline:
         return self._finish(outcome)
 
     def _finish(self, outcome: Outcome) -> Outcome:
-        self.store.record(outcome)
+        self.store.record(outcome, self.clock())
         return outcome
