@@ -1,0 +1,16 @@
+# Settings for one business ("client"). See README.md for what each setting does.
+business_name: "Lakeside Cottages (demo)"
+languages: [fi, en, sv]          # reply in the customer's language if listed, else English
+mode: draft                      # draft | auto
+auto_send_categories: [faq]      # only used when mode: auto
+drafts_folder: "Drafts"          # Gmail: "[Gmail]/Drafts"
+sent_folder: "Sent"              # Gmail: "[Gmail]/Sent Mail"
+quote_required_fields: [arrival date, departure date, number of guests, pets]
+booking_link: "https://example.com/book"
+min_confidence: 0.7              # below this, the email is flagged for the owner instead
+signature: |
+  Best regards,
+  Lakeside Cottages
+models:
+  classifier: claude-haiku-4-5-20251001
+  responder: claude-sonnet-5-5
