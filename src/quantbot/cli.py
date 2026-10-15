@@ -8,6 +8,7 @@ Subcommands:
     validate      full validation pipeline + acceptance gates
     research      end-to-end: optimize -> validate -> approve/reject
     run           start the live/paper trading engine (replay or live loop)
+    webhook       receive TradingView alerts and trade them through the engine
     dashboard     launch the FastAPI monitoring dashboard
 
 Designed so the analytics subcommands work offline against parquet/CSV, while
@@ -265,6 +266,45 @@ def cmd_run(args) -> int:
     return 0
 
 
+def cmd_webhook(args) -> int:
+    import os
+
+    import uvicorn
+
+    from quantbot.execution.engine import LiveEngine
+    from quantbot.execution.webhook_server import allowed_ips_from_env, create_app
+    from quantbot.integrations.tradingview import TradingViewBridge
+
+    s = get_settings()
+    secret = os.getenv("TRADINGVIEW_WEBHOOK_SECRET", "")
+    if len(secret) < 16:
+        raise SystemExit("Set TRADINGVIEW_WEBHOOK_SECRET (16+ random characters) before starting.")
+
+    if args.venue == "hyperliquid":
+        if s.mode != "live":
+            raise SystemExit("--venue hyperliquid places real orders; set QUANTBOT_MODE=live to confirm.")
+        from quantbot.integrations.hyperliquid import HyperliquidVenue
+
+        venue = HyperliquidVenue()
+        venue.authenticate()
+        equity = sum(b.total for b in venue.get_balances()) or args.equity
+        poll = args.stop_poll
+    else:
+        from quantbot.execution.paper_broker import PaperBroker
+
+        venue = PaperBroker(starting_cash=args.equity, costs=s.costs)
+        equity = args.equity
+        poll = 0.0  # paper has no live price feed; stops are checked on each alert
+
+    symbols = {x.strip() for x in os.getenv("TRADINGVIEW_SYMBOLS", "").split(",") if x.strip()}
+    engine = LiveEngine(venue, {}, settings=s, starting_equity=equity)
+    bridge = TradingViewBridge(engine, secret, allowed_symbols=symbols or None)
+    app = create_app(bridge, allowed_ips=allowed_ips_from_env(), stop_poll_seconds=poll)
+    log.info("webhook_starting", venue=venue.name, equity=equity, port=args.port)
+    uvicorn.run(app, host=args.host, port=args.port)
+    return 0
+
+
 def cmd_dashboard(args) -> int:
     import uvicorn
 
@@ -339,6 +379,15 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--equity", type=float, default=10_000.0)
     d.add_argument("--warmup", type=int, default=200)
     d.set_defaults(func=cmd_run)
+
+    d = sub.add_parser("webhook", help="Receive TradingView alerts and trade them")
+    d.add_argument("--host", default="0.0.0.0")
+    d.add_argument("--port", type=int, default=8080)
+    d.add_argument("--venue", choices=("paper", "hyperliquid"), default="paper")
+    d.add_argument("--equity", type=float, default=10_000.0, help="Paper starting cash")
+    d.add_argument("--stop-poll", type=float, default=15.0,
+                   help="Seconds between live stop/take-profit checks (hyperliquid only)")
+    d.set_defaults(func=cmd_webhook)
 
     d = sub.add_parser("dashboard")
     d.add_argument("--host", default="0.0.0.0")

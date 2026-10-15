@@ -116,9 +116,53 @@ class LiveEngine:
             price = self.venue.get_ticker(symbol)
             self._close(symbol, price, reason=reason)
 
+    # ------------------------------------------------- external signal API
+    # Used by signal sources that decide entries/exits outside a Strategy
+    # (e.g. TradingView webhooks).  Entries still pass the same risk gate.
+    def open_position(self, symbol: str, strategy_name: str, price: float,
+                      stop: float = float("nan"),
+                      take_profit: float = float("nan")) -> str:
+        """Open a long at ``price``.  Returns "opened" or the reason it didn't."""
+        if symbol in self.positions:
+            return "already_open"
+        if hasattr(self.venue, "set_price"):
+            self.venue.set_price(symbol, price)
+        self._mark_to_market(symbol, price)
+        result = self._try_open(symbol, strategy_name, price, stop, take_profit, trail=False)
+        self._persist()
+        return result
+
+    def close_position(self, symbol: str, price: float, reason: str = "signal") -> str:
+        """Close the long on ``symbol``.  Returns "closed" or why it didn't."""
+        if symbol not in self.positions:
+            return "no_position"
+        if hasattr(self.venue, "set_price"):
+            self.venue.set_price(symbol, price)
+        self._close(symbol, price, reason=reason)
+        self._persist()
+        return "no_position" if symbol in self.positions else "closed"
+
+    def check_exits(self, symbol: str, price: float) -> str | None:
+        """Apply stop / take-profit to an open position at ``price``."""
+        pos = self.positions.get(symbol)
+        if pos is None:
+            return None
+        if hasattr(self.venue, "set_price"):
+            self.venue.set_price(symbol, price)
+        self._mark_to_market(symbol, price)
+        reason = None
+        if pos.stop_price and price <= pos.stop_price:
+            reason = "stop"
+        elif not np.isnan(pos.take_profit) and price >= pos.take_profit:
+            reason = "take_profit"
+        if reason:
+            self._close(symbol, price, reason=reason)
+            self._persist()
+        return reason
+
     # ---------------------------------------------------------------- private
     def _try_open(self, symbol: str, strat_name: str, price: float, stop: float,
-                  take_profit: float = float("nan"), trail: bool = True) -> None:
+                  take_profit: float = float("nan"), trail: bool = True) -> str:
         self.risk.set_open_positions(len(self.positions))
         self.risk.update_equity(self._equity)
         decision = self.risk.can_open()
@@ -126,7 +170,7 @@ class LiveEngine:
             log_risk(log, symbol=symbol, action="entry_blocked", reason=decision.reason)
             if decision.reason.startswith("kill_switch"):
                 self.flatten_all(reason="kill_switch")
-            return
+            return decision.reason
 
         stop_price = stop if not np.isnan(stop) else price * 0.95  # 5% safety stop
         sizing = fixed_fractional_size(
@@ -136,7 +180,7 @@ class LiveEngine:
             risk_per_trade=self.settings.risk.risk_per_trade,
         )
         if sizing.qty <= 0:
-            return
+            return "zero_size"
 
         order = Order(
             client_id=self.om.new_client_id(),
@@ -155,6 +199,8 @@ class LiveEngine:
             )
             log_strategy(log, symbol=symbol, action="opened", qty=result.filled_qty,
                          price=result.avg_fill_price, stop=stop_price, risk_cash=sizing.risk_cash)
+            return "opened"
+        return f"order_{result.status.value}"
 
     def _close(self, symbol: str, price: float, reason: str) -> None:
         pos = self.positions.get(symbol)
